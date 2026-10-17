@@ -77,13 +77,20 @@ Click any author's name in the feed, the inbox or the following list and you lan
 
 ## Discussions, through Zulip
 
-With Zulip set up (below), quietfeed reads the `#quietfeed` stream back too. Under any item that a topic in the stream links to, a quiet line says who is talking about it and when; *open discussion* unfolds the thread right there, LaTeX rendered, with a reply box that posts as you. The **talk** chip lists every topic in the stream newest first, with the item it is about when quietfeed can tell. This is the shared view: what your friends found and said, without quietfeed becoming a second chat.
+With Zulip set up (below), quietfeed reads your group's streams back too, and the **talk** tab is where the group uses Zulip from inside quietfeed: enough to read and discuss, not a second chat client.
+
+- **Streams.** Every stream shares go to (the default `#quietfeed` and any per-kind ones) plus any others you list in settings, as text chips at the top of the tab. Each lists its topics newest first: who is in it, how many messages, when, and the item it is about when quietfeed can tell (the video, post or paper is shown right there). A topic with messages you have not read says so in muted text (`3 new`), using Zulip's own read flags, so opening the thread here marks it read in Zulip too and vice versa. There is no counter anywhere else, nothing in the nav.
+- **Threads.** *open discussion* unfolds the topic in place, LaTeX rendered, oldest first, with a reply box that posts as you. Each message carries its reactions (click one to add yours or take it back, `+` offers a few more) and, on your own messages, an **edit** link that opens the markdown source. The same thread appears under any feed, inbox or library item that a topic links to, where a quiet line says who is talking about it.
+- **New topic.** *+ topic* at the top of the tab starts a topic from scratch in the selected stream: a name and a first message, markdown and `$LaTeX$`.
+- **Search.** The box asks Zulip's own search within the selected stream and shows the matches grouped by topic, Zulip's highlighting kept, each openable in place.
+
+Everything beyond that (people, private messages, stream settings, long history) is *in Zulip ↗*, one click away on every topic and thread.
 
 ## Sharing to Zulip
 
 The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). Every item also has **copy link** for sending it to a friend any other way. **share** opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.
 
-Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `quietfeed`; create it in Zulip first). *Test connection* confirms it. Below that, each kind can go to its own stream, videos to `#vids`, papers to `#papers` and so on; the share box shows the target and lets you pick another. quietfeed reads every stream named there, so discussions are found wherever they live. The key is stored in your `quietfeed.db` and never shown back on the page.
+Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `quietfeed`; create it in Zulip first). *Test connection* confirms it. Below that, each kind can go to its own stream, videos to `#vids`, papers to `#papers` and so on; the share box shows the target and lets you pick another. quietfeed reads every stream named there, so discussions are found wherever they live, and the **talk** tab can show further streams you list, comma-separated. The key is stored in your `quietfeed.db` and never shown back on the page.
 
 ## Library
 

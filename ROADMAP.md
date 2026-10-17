@@ -29,11 +29,13 @@ GitHub repository, issues, MIT license, a release workflow that builds Windows a
 ### 3. Share to Zulip — done
 "share" on any item opens a note box and posts to the configured stream and topic as you. Settings hold site, e-mail, API key and stream, with a connection test.
 
-### 4. Shared view
-Show the `#quietfeed` stream inside quietfeed, newest first: who shared what, their note, and a link into the Zulip thread. Read-only, through the same API key. This is the "what my friends found" page without building a second social network.
+### 4. Shared view — done
+The **talk** tab shows the group's Zulip streams inside quietfeed, through the same API key: topics newest first with the item each is about, threads opened in place (also under the item itself in the feed, inbox and library), replies, a new topic from scratch, Zulip's search within a stream, reactions, editing your own messages, and Zulip's own read flags for a muted "n new" on a topic row. Nothing is duplicated: every message lives in Zulip, and everything beyond reading and discussing items is "open in Zulip".
 
 ### 5. Users and invites
 Invite links created by whoever runs the server; password login with PBKDF2 (standard library) and a session cookie. Each user has their own follows, seen, saved, settings and Zulip key; sources are shared and fetched once. With no users, the app behaves exactly as today.
+
+Since milestone 4, everyone in the group already has a Zulip account and a personal API key that quietfeed holds. Identity can therefore be "sign in with your Zulip API key": the server asks Zulip who the key belongs to (`/users/me`) and that is the user, with no separate password system, no invite tokens and no second place where accounts live. Whoever is in the Zulip organisation is in; whoever leaves it is out. The PBKDF2 route stays as the fallback for a group without Zulip.
 
 ### 6. Hosting
 `--host`, `--data-dir`, a launchd plist and a systemd unit under `deploy/`, Tailscale or Caddy notes, backups as a copy of the `.db`. Remote playback: a `quietfeed://play/<id>` URL handler registered by the binary in client mode that opens mpv locally; fallback copy link.
@@ -46,7 +48,7 @@ An RSS feed of everything a user follows, so quietfeed can be someone's backend 
 
 ## Non-goals
 
-Public sign-up, advertising, recommendations, real-time anything, native mobile apps, comments or reactions inside quietfeed (that is what Zulip is for), and anything that measures attention.
+Public sign-up, advertising, recommendations, real-time anything, native mobile apps, a comment or reaction system of quietfeed's own (threads and reactions shown in the talk tab are Zulip's, read and written through its API), and anything that measures attention.
 
 ## How to help
 

@@ -10,6 +10,7 @@
   --bg:#121214;--fg:#e9e7e2;--mut:#8f8d86;--faint:#5c5a55;--line:#26262a;--acc:#8ab8df;--card:#19191c;--soft:#1f1f23;--warn:#f0c08a;--warnbg:#2c2216;
 }
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.55 var(--serif);font-optical-sizing:auto;text-rendering:optimizeLegibility}
 main{max-width:680px;margin:0 auto;padding:28px 20px 96px}
@@ -55,6 +56,25 @@ h2.sub .meta{font-weight:400}
 .topic{padding:14px 0;border-bottom:1px solid var(--line)}
 .topic .t{font-size:17px}
 .topic .last{color:var(--mut);font-size:15px;margin-top:2px}
+.topic .hit{font-size:15px;margin-top:6px;padding-left:10px;border-left:2px solid var(--line)}
+.topic .hit .who{font-size:13px;color:var(--mut)}
+.topic .hit .who b{color:var(--fg);font-weight:600}
+.new{color:var(--mut)}
+.highlight{background:var(--soft);border-radius:2px;padding:0 1px}
+.thread .who .mine,.thread .who .edited{color:var(--faint)}
+.thread .who button{color:var(--acc);margin-left:8px;font-size:13px}
+.reacts{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:4px;font-size:13px;color:var(--mut)}
+.reacts button{font-size:13px;color:var(--mut);padding:0 6px;border:1px solid var(--line);border-radius:10px;line-height:1.6}
+.reacts button:hover{color:var(--fg);border-color:var(--mut)}
+.reacts button.mine{color:var(--fg);border-color:var(--mut)}
+.reacts button.add{border-color:transparent;color:var(--faint)}
+.reacts button.add:hover{color:var(--fg)}
+.reacts .pick button{border-color:transparent;font-size:15px;padding:0 3px}
+.thread .edit textarea{margin-top:4px}
+#newtopic{display:flex;flex-direction:column;gap:6px}
+#newtopic input{font-size:15px}
+#newtopic .row{margin:0}
+#talksearch{margin-bottom:6px}
 .srchead{display:grid;grid-template-columns:64px 1fr;gap:16px;align-items:start}
 .srchead .av{width:64px;height:64px;border-radius:50%;object-fit:cover;background:var(--soft)}
 .srchead h2{font-size:20px;margin:0}
