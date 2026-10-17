@@ -57,6 +57,16 @@ If a browser on this machine is signed in to YouTube, pick it under *Browser ses
 
 X's API no longer offers free read access and scraping a logged-in session risks the account, so there is no live sync. The complete route is the archive: on x.com, *Settings → Your account → Download an archive of your data*, then drop `data/following.js` into the import box. It only holds numeric ids; they are resolved to handles through x.com's public intent redirect (no login), and whatever does not resolve on the spot is queued and retried every refresh.
 
+## Links from elsewhere
+
+A link someone sends you on WhatsApp, in mail or anywhere else can be opened in quietfeed instead of a browser where the site is blocked. Three ways in, from easiest to most automatic:
+
+- **+ link** above the feed: paste any YouTube, X, arXiv or article link. quietfeed fetches it itself and shows it as an item in the **inbox**, with play, save and share like everything else, plus a *follow* button for the channel, account, author or newsletter it came from. Channel and profile links become a follow suggestion directly.
+- **Clipboard watcher** (settings): with it on, every link you *copy* that quietfeed can show lands in the inbox by itself. Copy a link in WhatsApp, switch to quietfeed, it is there. A second checkbox widens it from YouTube, X and arXiv links to every link. Only the clipboard text is read, only links are looked at, and nothing leaves the machine except the fetch of that link's own page.
+- **Make quietfeed the link handler** (Windows): run `quietfeed --register-handler` (or `python quietfeed.py --register-handler`), then pick *quietfeed* under *Settings → Apps → Default apps → Web browser*. From then on a click on any link in any app goes through quietfeed: videos, posts and papers open in the inbox, everything else is handed to your normal browser (Firefox, Chrome or Edge, whichever is installed, or the `fallback_browser` setting). `--unregister-handler` undoes it. `quietfeed --open URL` is the same thing from a terminal.
+
+Tweets are read through X's public embed endpoint, which needs no login and works for public posts.
+
 ## Sharing to Zulip
 
 The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). **share** on any item opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.

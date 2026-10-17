@@ -30,6 +30,8 @@ h1{font-size:19px;margin:0;font-weight:600;letter-spacing:.02em}
 h2{font-size:16px;margin:0 0 8px;font-weight:600;letter-spacing:.01em}
 h2.sub{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
 h2.sub .meta{font-weight:400}
+.inboxacts{margin-top:4px}
+#linkform{margin:0 0 10px;padding-bottom:10px}
 .share{margin-top:10px;padding:10px 12px;background:var(--soft);border-radius:8px}
 .share textarea{width:100%;font-size:15px;margin-bottom:6px}
 .share input{width:100%;font-size:14px}

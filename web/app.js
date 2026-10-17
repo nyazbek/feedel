@@ -105,7 +105,14 @@ function kindChips(active, counts, extraTags, activeTag, prefix) {
 function renderFeed() {
   const s = data.settings;
   $('#when').textContent = data.refreshing ? 'refreshing…' : data.last_refresh ? 'updated ' + ago(data.last_refresh) + ' ago' : 'loading…';
-  $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '');
+  const inboxChip = (data.inbox.length || kindFilter === 'inbox') ? `<button data-f="inbox" class="${kindFilter === 'inbox' ? 'on' : ''}">inbox${data.inbox.length ? ' · ' + data.inbox.length : ''}</button>` : '';
+  $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '') + inboxChip;
+  if (kindFilter === 'inbox') {
+    $('#papers').hidden = true; $('#errs').innerHTML = '';
+    $('#list').innerHTML = data.inbox.length ? data.inbox.map(i => article(i).replace('</article>', inboxRow(i) + '</article>')).join('')
+      : '<div class="empty">nothing here. paste a link with <b>+ link</b>, or turn on the clipboard watcher in settings and copy one from WhatsApp.</div>';
+    return;
+  }
   $('#errs').innerHTML = data.errors.length
     ? `<details class="err"><summary>${data.errors.length} source${data.errors.length > 1 ? 's' : ''} could not be fetched</summary>${esc(data.errors.join('\n'))}</details>` : '';
   const papers = kindFilter === 'arxiv';
@@ -142,6 +149,17 @@ function renderFeed() {
   L.innerHTML = html;
 }
 
+function inboxRow(i) {
+  const f = i.follow;
+  let follow = '';
+  if (f && f.ref) {
+    const already = f.kind !== 'arxiv' && (data.followed[f.kind] || []).includes(f.ref);
+    follow = already ? `<span class="meta">following ${esc(f.name || f.ref)}</span>`
+      : `<button data-a="inbox-follow">follow ${esc(f.name || f.ref)}${f.kind === 'rss' ? ' (feed)' : f.kind === 'arxiv' ? ' (author)' : ''}</button>`;
+  }
+  return `<div class="acts inboxacts"><span class="meta">via ${esc(i.via || 'link')} · ${ago(i.added)} ago</span>${follow}<button data-a="inbox-remove" class="faint">remove</button></div>`;
+}
+
 function digest(papers) {
   const top = papers.slice(0, 3).map(p => `<span>${esc(p.title)}</span>`).join('');
   const via = [...new Set(papers.flatMap(p => p.via || []))].slice(0, 4).join(', ');
@@ -175,6 +193,10 @@ function article(i) {
       ${i.desc ? `<div class="desc">${esc(i.desc)}</div>` : ''}
       <div class="acts"><a href="${esc(i.link)}" target="_blank" rel="noopener">open ↗</a>${saveBtn}${seenBtn}</div></div></article>`;
   }
+  if (i.kind === 'follow') {
+    return `<article class="rss" data-id="${esc(i.id)}"><div>
+      <p class="t">${esc(i.title)}</p><div class="by">${esc(i.author || '')}${i.author ? ' · ' : ''}a source, not a single item</div></div></article>`;
+  }
   if (i.kind === 'arxiv') {
     const mine = new Set((data.arxiv_authors || []).map(a => a.toLowerCase()));
     const authors = (i.authors || []).map(a => `<button data-author="${esc(a)}" class="${mine.has(a.toLowerCase()) ? 'me' : ''}">${esc(a)}</button>`).join(', ');
@@ -191,7 +213,7 @@ function article(i) {
 }
 
 async function setMark(id, field, on) {
-  const item = data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || savedItems[id];
+  const item = findItem(id);
   const set = field === 'saved' ? saved : seen;
   on ? set.add(id) : set.delete(id);
   if (field === 'saved') { if (on && item) savedItems[id] = { ...item, saved_at: Date.now() / 1000 }; else delete savedItems[id]; }
@@ -203,7 +225,7 @@ async function setMark(id, field, on) {
 
 /* ------------------------------------------------------------ share to Zulip */
 
-function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || savedItems[id]; }
+function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || (data.inbox || []).find(i => i.id === id) || savedItems[id]; }
 function snapshot(item) { return Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k))); }
 
 function openShare(art) {
@@ -277,7 +299,7 @@ function queueLibUpdate(id, patch) {
 
 function fillSettings() {
   const s = data.settings;
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts']) $('#s_' + k).checked = !!s[k];
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) $('#s_' + k).checked = !!s[k];
   $('#s_min_minutes').value = s.min_minutes ?? 0;
   $('#s_max_per_channel').value = s.max_per_channel ?? 0;
   $('#s_block_words').value = (s.block_words || []).join('\n');
@@ -294,7 +316,7 @@ async function testZulip() {
 }
 async function saveSettings(keepOpen) {
   const patch = {};
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts']) patch[k] = $('#s_' + k).checked;
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) patch[k] = $('#s_' + k).checked;
   patch.min_minutes = +$('#s_min_minutes').value || 0;
   patch.max_per_channel = +$('#s_max_per_channel').value || 0;
   patch.block_words = $('#s_block_words').value;
@@ -476,6 +498,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.w !== undefined) { paperWindow = +b.dataset.w; axResults = null; render(); return; }
   if (b.id === 'ax_clear') { axResults = null; render(); return; }
   if (b.id === 'theme') { cycleTheme(); return; }
+  if (b.id === 'linkbtn') { const f = $('#linkform'); f.hidden = !f.hidden; if (!f.hidden) $('#linkq').focus(); return; }
   if (b.id === 'rf') { toast('refreshing…'); await api('/api/refresh', {}); setTimeout(load, 4000); return; }
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
@@ -514,6 +537,13 @@ document.addEventListener('click', async e => {
   if (!art) return;
   const id = art.dataset.id;
   if (b.dataset.a === 'papers') { kindFilter = 'arxiv'; render(); window.scrollTo(0, 0); return; }
+  if (b.dataset.a === 'inbox-follow') {
+    const it = findItem(id), f = it && it.follow; if (!f) return;
+    b.disabled = true; b.textContent = 'adding…';
+    try { await followRef(f.ref, f.kind, f.name); await load(); } catch (err) { b.disabled = false; b.textContent = 'follow'; toast(err.message); }
+    return;
+  }
+  if (b.dataset.a === 'inbox-remove') { const it = findItem(id); await api('/api/inbox/remove', { url: it.url }); await load(); return; }
   if (b.dataset.a === 'share') { openShare(art); return; }
   if (b.dataset.a === 'share-send') { sendShare(art); return; }
   if (b.dataset.a === 'share-cancel') { art.querySelector('.share')?.remove(); return; }
@@ -556,6 +586,14 @@ document.addEventListener('change', async e => {
 });
 $('#addf').addEventListener('submit', e => { e.preventDefault(); addOrSearch(); });
 $('#axsearch').addEventListener('submit', e => { e.preventDefault(); searchArxiv(); });
+$('#linkform').addEventListener('submit', async e => {
+  e.preventDefault();
+  const u = $('#linkq').value.trim(); if (!u) return;
+  const btn = $('#linkform button'); btn.disabled = true; btn.textContent = 'fetching…';
+  try { await api('/api/inbox', { url: u, via: 'box' }); $('#linkq').value = ''; $('#linkform').hidden = true; kindFilter = 'inbox'; await load(); }
+  catch (err) { toast(err.message, 5000); }
+  btn.disabled = false; btn.textContent = 'open in quietfeed';
+});
 const drop = $('#drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
@@ -566,6 +604,7 @@ let theme = null; try { theme = localStorage.getItem('theme'); } catch (e) { /* 
 applyTheme(theme);
 $('#addhint').textContent = HINTS.yt;
 if (location.hash === '#following') view = 'following';
+if (location.hash === '#inbox') kindFilter = 'inbox';
 load();
 if (view === 'following') { loadSubs(); loadSync(); }
 setInterval(() => { if (view === 'feed' && !axResults) load(); }, 60000);

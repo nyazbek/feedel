@@ -68,7 +68,10 @@ DEFAULT_CONFIG = {
     "arxiv": {"queries": [], "max_results": 50},  # categories (cat:math.PR), authors (au:"Name"), keyword searches
     # titles matching any of these are hidden; plain text = case-insensitive substring, /…/ = regex
     "filters": {"block_words": []},
-    "ui": {"hide_thumbnails": False, "calm_titles": True, "hide_seen": False},
+    # watch_clipboard: links you copy anywhere (WhatsApp, mail…) land in the inbox; clipboard_any widens it from
+    # YouTube/X/arXiv links to every link. fallback_browser: where `--open` sends links quietfeed cannot show ("" = auto)
+    "ui": {"hide_thumbnails": False, "calm_titles": True, "hide_seen": False, "watch_clipboard": False, "clipboard_any": False},
+    "fallback_browser": "",
     # "browser": name of a browser signed in to YouTube whose subscriptions are re-read on every refresh (needs yt-dlp)
     "sync": {"browser": ""},
     # where the conversation lives: "share" posts an item and your note to this stream, as you, with your own API key
@@ -236,6 +239,9 @@ CREATE TABLE IF NOT EXISTS comments (
     id INTEGER PRIMARY KEY, share_id INTEGER NOT NULL REFERENCES shares(id), user_id INTEGER NOT NULL REFERENCES users(id),
     parent_id INTEGER REFERENCES comments(id), body TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS cache (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (kind, key));
+CREATE TABLE IF NOT EXISTS inbox (  -- links handed to quietfeed from elsewhere (clipboard, the link box, the URL handler)
+    user_id INTEGER NOT NULL REFERENCES users(id), url TEXT NOT NULL, item_json TEXT NOT NULL, via TEXT NOT NULL DEFAULT '',
+    added INTEGER NOT NULL, PRIMARY KEY (user_id, url));
 """
 
 def open_db():
@@ -400,6 +406,27 @@ def load_items(limit=None):
             it["short"] = CACHE["shorts"].get(it["id"], it.get("short", False))
         out.append(it)
     return out
+
+def inbox_list():
+    with LOCK:
+        rows = DB.execute("SELECT url, item_json, via, added FROM inbox WHERE user_id = ? ORDER BY added DESC LIMIT 500", (USER_ID,)).fetchall()
+    out = []
+    for r in rows:
+        it = json.loads(r["item_json"])
+        it.update({"url": r["url"], "via": r["via"], "added": r["added"], "cid": "inbox", "tags": it.get("tags") or []})
+        out.append(it)
+    return out
+
+def inbox_add(url, item, via=""):
+    with tx() as db:
+        if item.get("id"):  # the same video or post reached through two spellings of its link is one entry
+            db.execute("DELETE FROM inbox WHERE user_id = ? AND json_extract(item_json, '$.id') = ?", (USER_ID, item["id"]))
+        db.execute("INSERT OR REPLACE INTO inbox (user_id, url, item_json, via, added) VALUES (?, ?, ?, ?, ?)",
+                   (USER_ID, url, json.dumps(item, ensure_ascii=False), via, int(time.time())))
+
+def inbox_remove(url):
+    with tx() as db:
+        db.execute("DELETE FROM inbox WHERE user_id = ? AND url = ?", (USER_ID, url))
 
 def export_data():
     """Everything in the database as one JSON-able dict: the old config / state / cache shapes plus the stored items."""
@@ -928,15 +955,19 @@ ARXIV_CAT_RE = r"(?:%s)(?:\.[A-Za-z\-]{2,12})?" % "|".join(re.escape(a) for a in
 ARXIV_LAST = [0.0]
 ARXIV_LOCK = threading.Lock()
 
-def arxiv_api(search_query, max_results=50, sort="submittedDate"):
+def arxiv_api(search_query="", max_results=50, sort="submittedDate", id_list=""):
     """One arXiv API call, politely spaced (they ask for 3 s between requests)."""
+    params = {"max_results": max_results}
+    if id_list:
+        params["id_list"] = id_list
+    else:
+        params.update({"search_query": search_query, "sortBy": sort, "sortOrder": "descending"})
     with ARXIV_LOCK:
         wait = ARXIV_LAST[0] + 3 - time.time()
         if wait > 0:
             time.sleep(wait)
         try:
-            data = fetch("https://export.arxiv.org/api/query?" + urlencode(
-                {"search_query": search_query, "sortBy": sort, "sortOrder": "descending", "max_results": max_results}), timeout=40)
+            data = fetch("https://export.arxiv.org/api/query?" + urlencode(params), timeout=40)
         finally:
             ARXIV_LAST[0] = time.time()
     out = []
@@ -1138,6 +1169,8 @@ def items_payload():
                 "saved_items": [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)],
                 "tags": tags, "counts": {k: len(sub_list(k)) for k in KINDS},
                 "arxiv_authors": [s["name"] for s in sub_list("arxiv") if s.get("qtype") == "author"],
+                "inbox": inbox_list(),
+                "followed": {k: [s.get("id") for s in sub_list(k)] for k in KINDS},
                 "settings": settings_payload()}
 
 def update_settings(patch):
@@ -1151,7 +1184,7 @@ def update_settings(patch):
         if "block_words" in patch:
             v = patch["block_words"]
             CONFIG["filters"]["block_words"] = [w.strip() for w in (v if isinstance(v, list) else str(v).splitlines()) if w.strip()]
-        for k in ("hide_thumbnails", "calm_titles", "hide_seen"):
+        for k in ("hide_thumbnails", "calm_titles", "hide_seen", "watch_clipboard", "clipboard_any"):
             if k in patch:
                 CONFIG["ui"][k] = bool(patch[k])
         if isinstance(patch.get("zulip"), dict):
@@ -1668,6 +1701,272 @@ def avatar_bytes(kind, id_):
     AVATARS[key] = data
     return data
 
+# ---------------------------------------------------------------- links from elsewhere (the inbox)
+
+URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]]+")
+
+def link_kind(url):
+    """Which kind of thing a link points at: 'yt', 'tw', 'arxiv', 'page', or None when it is not even a link."""
+    u = urlparse(url if "://" in url else "https://" + url)
+    host = re.sub(r"^(www|m|mobile|music)\.", "", u.netloc.lower())
+    if host in ("youtube.com", "youtu.be", "youtube-nocookie.com"):
+        return "yt"
+    if host in ("x.com", "twitter.com", "xcancel.com", "fxtwitter.com", "vxtwitter.com", "fixupx.com") or host.startswith("nitter."):
+        return "tw"
+    if host == "arxiv.org":
+        return "arxiv"
+    return "page" if host and "." in host else None
+
+def resolve_link(url, via=""):
+    """A link from anywhere → the item the feed would have shown for it, fetched by this program.
+    Also says what to follow to get more of the same ('follow': {kind, ref, name})."""
+    url = url.strip().strip("<>\"'")
+    if "://" not in url:
+        url = "https://" + url
+    kind = link_kind(url)
+    u = urlparse(url)
+    host = re.sub(r"^(www|m|mobile|music)\.", "", u.netloc.lower())
+    parts = [p for p in u.path.split("/") if p]
+    qs = parse_qs(u.query)
+    now = time.time()
+    if kind == "yt":
+        vid = None
+        if host == "youtu.be" and parts:
+            vid = parts[0]
+        elif parts and parts[0] in ("shorts", "live", "embed", "v") and len(parts) > 1:
+            vid = parts[1]
+        elif qs.get("v"):
+            vid = qs["v"][0]
+        if vid and re.fullmatch(r"[\w-]{11}", vid):
+            watch = f"https://www.youtube.com/watch?v={vid}"
+            info = json.loads(fetch("https://www.youtube.com/oembed?" + urlencode({"url": watch, "format": "json"}), timeout=15))
+            it = {"kind": "yt", "id": vid, "title": info.get("title", ""), "author": info.get("author_name", ""), "ts": now, "desc": "", "link": watch}
+            try:  # duration, channel id and upload date from the watch page's player data
+                page = yt_page(watch)
+                vd = page.find('"videoDetails":{')
+                seg = page[vd:vd + 3000] if vd >= 0 else page
+                m = re.search(r'"lengthSeconds":"(\d+)"', seg)
+                if m:
+                    it["dur"] = int(m.group(1))
+                    cache_put("durations", vid, it["dur"])
+                m = re.search(r'"channelId":"(UC[\w-]{22})"', seg)
+                if m:
+                    it["follow"] = {"kind": "yt", "ref": m.group(1), "name": it["author"]}
+                m = re.search(r'"(?:publishDate|uploadDate)":"(\d{4}-\d{2}-\d{2})', page)
+                if m:
+                    it["ts"] = iso_ts(m.group(1) + "T12:00:00+00:00") or now
+            except Exception as ex:
+                log("  watch page", vid, ex)
+            it["short"] = "/shorts/" in url
+            return it
+        if parts and (parts[0].startswith("@") or parts[0] in ("channel", "c", "user")):
+            k, ref = parse_ref(url, "yt")
+            info = yt_channel_info(ref)
+            return {"kind": "follow", "id": url, "title": info["name"], "author": info.get("handle", ""), "ts": now, "link": url,
+                    "follow": {"kind": "yt", "ref": info["id"], "name": info["name"]}}
+        raise RuntimeError("that YouTube link is not a video or a channel")
+    if kind == "tw":
+        m = re.search(r"/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d+)", u.path)
+        if m:
+            user, sid = m.group(1), m.group(2)
+            canon = f"https://x.com/{user}/status/{sid}"
+            o = json.loads(fetch("https://publish.twitter.com/oembed?" + urlencode({"url": f"https://twitter.com/{user}/status/{sid}", "omit_script": "true", "dnt": "true", "hide_thread": "true"}), timeout=15))
+            h = o.get("html", "")
+            pm = re.search(r"<p[^>]*>(.*?)</p>", h, re.S)
+            text = strip_html(pm.group(1).replace("<br>", "\n") if pm else h, 2000)
+            am = re.search(r"&mdash;\s*(.*?)\s*\(@(\w+)\)\s*<a[^>]*>([^<]*)</a>", h)
+            ts = now
+            if am:
+                try:
+                    ts = datetime.strptime(am.group(3).strip(), "%B %d, %Y").timestamp()
+                except Exception:
+                    pass
+            handle = (am.group(2) if am else user).lower()
+            return {"kind": "tw", "id": canon, "title": text, "author": "@" + handle, "ts": ts, "desc": "", "link": canon,
+                    "follow": {"kind": "tw", "ref": handle, "name": html.unescape(am.group(1)) if am else "@" + handle}}
+        if parts and re.fullmatch(r"[A-Za-z0-9_]{1,15}", parts[0]) and parts[0].lower() not in ("i", "home", "search", "explore", "settings", "intent"):
+            handle = parts[0].lower()
+            return {"kind": "follow", "id": url, "title": "@" + handle + " on X", "author": "", "ts": now, "link": f"https://x.com/{handle}",
+                    "follow": {"kind": "tw", "ref": handle, "name": "@" + handle}}
+        raise RuntimeError("that X link is not a post or a profile")
+    if kind == "arxiv":
+        m = re.search(r"/(?:abs|pdf|html|format)/([\w.\-]+?)(?:v\d+)?(?:\.pdf)?/?$", u.path) or re.search(r"(\d{4}\.\d{4,5})", url)
+        if not m:
+            r = arxiv_ref(url)
+            return {"kind": "follow", "id": url, "title": "arXiv " + r["label"], "author": r["type"], "ts": now, "link": url,
+                    "follow": {"kind": "arxiv", "ref": r["label"] if r["type"] != "author" else "au:" + r["label"], "name": r["label"]}}
+        items = arxiv_api(id_list=m.group(1), max_results=1)
+        if not items:
+            raise RuntimeError(f"arXiv knows no paper {m.group(1)}")
+        it = items[0]
+        it["follow"] = {"kind": "arxiv", "ref": "au:" + it["authors"][0], "name": it["authors"][0]} if it.get("authors") else None
+        return it
+    # any other page: title, description, site, and the feed it advertises
+    page = fetch(url, timeout=20, headers={"Accept-Language": "en-US,en;q=0.9"}).decode("utf-8", "ignore")
+    title = meta_content(page, "og:title") or html.unescape(re.sub(r"\s+", " ", (re.search(r"<title[^>]*>(.*?)</title>", page, re.S | re.I) or [None, ""])[1])).strip()
+    desc = meta_content(page, "og:description") or meta_content(page, "description")
+    site = meta_content(page, "og:site_name") or host
+    pub = meta_content(page, "article:published_time")
+    it = {"kind": "rss", "id": url, "title": title or url, "author": site, "ts": iso_ts(pub) or now, "desc": strip_html(desc, 400), "link": url, "by": meta_content(page, "author")}
+    fm = re.search(r'<link[^>]+type="application/(?:rss|atom)\+xml"[^>]*>', page, re.I)
+    hm = re.search(r'href="([^"]+)"', fm.group(0)) if fm else None
+    if hm:
+        href = html.unescape(hm.group(1))
+        it["follow"] = {"kind": "rss", "ref": href if href.startswith("http") else f"{u.scheme}://{u.netloc}/" + href.lstrip("/"), "name": site}
+    return it
+
+def inbox_take(url, via=""):
+    """Resolve a link and put it in the inbox (or refresh it if it is already there). Returns the item."""
+    it = resolve_link(url, via)
+    it["via"] = via
+    inbox_add(url.strip(), it, via)
+    log(f"  inbox ({via}): {it.get('kind')} {it.get('title', '')[:60]}")
+    return it
+
+def clipboard_text():
+    """Current clipboard text, or None. Windows through ctypes, macOS through pbpaste, Linux through xclip/wl-paste."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
+            u32.GetClipboardData.restype = ctypes.c_void_p
+            k32.GlobalLock.restype = ctypes.c_void_p
+            k32.GlobalLock.argtypes = k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            if not u32.IsClipboardFormatAvailable(13) or not u32.OpenClipboard(0):  # 13 = CF_UNICODETEXT
+                return None
+            try:
+                h = u32.GetClipboardData(13)
+                if not h:
+                    return None
+                p = k32.GlobalLock(h)
+                try:
+                    return ctypes.c_wchar_p(p).value
+                finally:
+                    k32.GlobalUnlock(h)
+            finally:
+                u32.CloseClipboard()
+        if sys.platform == "darwin":
+            return subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=3).stdout
+        for cmd in (["wl-paste", "-n"], ["xclip", "-o", "-selection", "clipboard"]):
+            if shutil.which(cmd[0]):
+                return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return None
+    return None
+
+def clipboard_loop():
+    """Opt-in: every link you copy that quietfeed can show goes to the inbox. Only the text is read, only for links,
+    and nothing leaves the machine except the fetch of that link's own page."""
+    last, seen = None, set()
+    while True:
+        time.sleep(1.5)
+        if not CONFIG["ui"].get("watch_clipboard"):
+            continue
+        t = clipboard_text()
+        if not t or t == last or len(t) > 4000:
+            last = t if t and len(t) <= 4000 else last
+            continue
+        last = t
+        for url in URL_RE.findall(t)[:5]:
+            url = url.rstrip(".,;:!?")
+            k = link_kind(url)
+            if not k or (k == "page" and not CONFIG["ui"].get("clipboard_any")) or url in seen:
+                continue
+            seen.add(url)
+            threading.Thread(target=lambda u=url: _safe_take(u, "clipboard"), daemon=True).start()
+
+def _safe_take(url, via):
+    try:
+        inbox_take(url, via)
+    except Exception as ex:
+        log(f"  inbox ({via}) failed for {url}: {ex}")
+
+def browser_for_the_rest():
+    """The browser `--open` hands non-quietfeed links to: the configured one, else the first installed."""
+    b = CONFIG.get("fallback_browser") or ""
+    if b and (os.path.isfile(b) or find_exe(b)):
+        return b if os.path.isfile(b) else find_exe(b)
+    pf, pfx, la = os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", ""), os.environ.get("LOCALAPPDATA", "")
+    for c in [os.path.join(pf, "Mozilla Firefox", "firefox.exe"), os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+              os.path.join(la, "Google", "Chrome", "Application", "chrome.exe"), os.path.join(pfx, "Microsoft", "Edge", "Application", "msedge.exe"),
+              os.path.join(pf, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")]:
+        if os.path.isfile(c):
+            return c
+    for n in ("firefox", "chrome", "msedge", "brave", "chromium"):
+        p = find_exe(n)
+        if p:
+            return p
+    return None
+
+def open_link_cli(url):
+    """`quietfeed --open URL`: a video, post, paper or page link goes to the inbox and the page opens on it;
+    anything else goes to the normal browser. This is what makes quietfeed usable as the system's link handler."""
+    k = link_kind(url)
+    if k in ("yt", "tw", "arxiv"):
+        import webbrowser
+        target = f"http://localhost:{PORT}/open?" + urlencode({"u": url})
+        import socket
+        with socket.socket() as probe:
+            probe.settimeout(0.5)
+            running = probe.connect_ex(("127.0.0.1", PORT)) == 0
+        if running:
+            webbrowser.open(target)
+            return 0
+        # not running: start the server with this link queued and the page opened on the inbox
+        STATE["queued_link"] = url
+        return None
+    b = browser_for_the_rest()
+    if b:
+        subprocess.Popen([b, url])
+        return 0
+    import webbrowser
+    webbrowser.open(url)
+    return 0
+
+def handler_command():
+    exe = sys.executable
+    if FROZEN:
+        return f'"{exe}" --open "%1"'
+    pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    return f'"{pyw if os.path.isfile(pyw) else exe}" "{os.path.abspath(__file__)}" --open "%1"'
+
+def register_handler(on=True):
+    """Windows: make quietfeed selectable under Settings → Apps → Default apps → Web browser. After choosing it,
+    every link from WhatsApp, mail or any app goes through `--open`. Nothing is changed without you picking it there."""
+    if sys.platform != "win32":
+        raise RuntimeError("the link handler is Windows-only for now; on macOS use the link box or the clipboard watcher")
+    import winreg
+    base = r"Software\Clients\StartMenuInternet\quietfeed"
+    if not on:
+        for key in (base + r"\Capabilities\URLAssociations", base + r"\Capabilities", base + r"\shell\open\command", base + r"\shell\open",
+                    base + r"\shell", base, r"Software\Classes\quietfeedURL\shell\open\command", r"Software\Classes\quietfeedURL\shell\open",
+                    r"Software\Classes\quietfeedURL\shell", r"Software\Classes\quietfeedURL"):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
+            except OSError:
+                pass
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\RegisteredApplications", 0, winreg.KEY_SET_VALUE) as k:
+                winreg.DeleteValue(k, "quietfeed")
+        except OSError:
+            pass
+        return "quietfeed removed from the browser list"
+    cmd = handler_command()
+
+    def put(path, values):
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as k:
+            for name, val in values.items():
+                winreg.SetValueEx(k, name, 0, winreg.REG_SZ, val)
+
+    put(r"Software\Classes\quietfeedURL", {"": "quietfeed link", "URL Protocol": ""})
+    put(r"Software\Classes\quietfeedURL\shell\open\command", {"": cmd})
+    put(base, {"": "quietfeed"})
+    put(base + r"\Capabilities", {"ApplicationName": "quietfeed", "ApplicationDescription": "Opens videos, posts and papers in quietfeed; everything else in your normal browser"})
+    put(base + r"\Capabilities\URLAssociations", {"http": "quietfeedURL", "https": "quietfeedURL"})
+    put(base + r"\shell\open\command", {"": cmd})
+    put(r"Software\RegisteredApplications", {"quietfeed": base + r"\Capabilities"})
+    return "registered: now pick quietfeed under Settings → Apps → Default apps → Web browser"
+
 # ---------------------------------------------------------------- zulip (where the conversation lives)
 
 def zulip_cfg():
@@ -1772,6 +2071,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(subs_payload())
             if p.path == "/api/sync":
                 return self._send(sync_payload())
+            if p.path == "/api/inbox":
+                return self._send(inbox_list())
+            if p.path == "/open":  # the link handler and bookmarks land here: take the link, show the inbox
+                u = q.get("u", [""])[0].strip()
+                if u:
+                    try:
+                        inbox_take(u, "link")
+                    except Exception as ex:
+                        return self._send(OAUTH_DONE_PAGE % ("Could not open that link: " + html.escape(str(ex)), RUN_PORT))
+                self.send_response(302)
+                self.send_header("Location", "/#inbox")
+                self.end_headers()
+                return
             if p.path == "/api/search":
                 s = q.get("q", [""])[0].strip()
                 return self._send(yt_search(s) if s else [])
@@ -1841,6 +2153,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(update_settings(body))
             if p.path == "/api/zulip/test":
                 return self._send(zulip_test())
+            if p.path == "/api/inbox":
+                u = str(body.get("url", "")).strip()
+                if not link_kind(u):
+                    return self._send({"error": "that does not look like a link"}, code=400)
+                return self._send(inbox_take(u, str(body.get("via") or "box")))
+            if p.path == "/api/inbox/remove":
+                inbox_remove(str(body.get("url", "")))
+                return self._send({"ok": True})
             if p.path == "/api/share":
                 if not isinstance(body.get("item"), dict):
                     return self._send({"error": "nothing to share"}, code=400)
@@ -1901,7 +2221,11 @@ USAGE = """usage: quietfeed.py [--port N] [--no-open] [--export] [--import FILE]
   --no-open       do not open the page in a browser
   --export        print everything in quietfeed.db (settings, follows, seen/saved, cache, items) as JSON on stdout and exit
   --import FILE   merge a JSON export, or an old config.json / state.json / cache.json, into quietfeed.db and exit
-                  (nothing is removed; stop a running quietfeed first)"""
+                  (nothing is removed; stop a running quietfeed first)
+  --open URL                 show a video / post / paper link in quietfeed (anything else opens in your browser)
+  --register-handler         Windows: make quietfeed selectable as the default web browser (links from any app go through --open)
+  --unregister-handler       undo that
+"""
 
 if __name__ == "__main__":
     if "--help" in sys.argv or "-h" in sys.argv:
@@ -1924,6 +2248,18 @@ if __name__ == "__main__":
             n = import_data(json.load(f))
         log(f"imported into quietfeed.db: {n['follows']} new follows, {n['seen']} seen, {n['saved']} saved, {n['items']} items")
         sys.exit(0)
+    if "--register-handler" in sys.argv or "--unregister-handler" in sys.argv:
+        print(register_handler("--register-handler" in sys.argv))
+        sys.exit(0)
+    if "--open" in sys.argv:
+        i = sys.argv.index("--open")
+        if i + 1 >= len(sys.argv):
+            print(USAGE)
+            sys.exit(2)
+        rc = open_link_cli(sys.argv[i + 1])
+        if rc is not None:
+            sys.exit(rc)
+        # falls through: start the server, which takes the queued link and opens the page on the inbox
     if FIRST_RUN:
         log("Created quietfeed.db — open the page and use the 'following' tab to import your subscriptions.")
     port = PORT
@@ -1947,11 +2283,15 @@ if __name__ == "__main__":
             webbrowser.open(f"http://localhost:{port}")
         sys.exit(0)
     threading.Thread(target=refresh_loop, daemon=True).start()
+    threading.Thread(target=clipboard_loop, daemon=True).start()
     log(f"quietfeed on http://localhost:{port}  (Ctrl+C to stop)")
+    if STATE.get("queued_link"):
+        threading.Thread(target=_safe_take, args=(STATE.pop("queued_link"), "link"), daemon=True).start()
+        sys.argv.append("--inbox")
     if "--no-open" not in sys.argv:
         try:
             import webbrowser
-            webbrowser.open(f"http://localhost:{port}")
+            webbrowser.open(f"http://localhost:{port}" + ("/#inbox" if "--inbox" in sys.argv else ""))
         except Exception:
             pass
     try:
