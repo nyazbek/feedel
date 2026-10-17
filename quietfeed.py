@@ -1174,11 +1174,16 @@ def visible_items():
         cap = int(CONFIG.get("max_per_channel") or 0)
         subs = {(k, s.get("id")): s for k, s in all_subs()}
         per = Counter()
-        out, papers = [], {}
+        out, papers, seen_links = [], {}, set()
         for it in STATE["items"]:
             sub = subs.get((it["kind"], it["cid"]))
             if sub is None or sub.get("muted"):
                 continue
+            if it["kind"] == "rss":  # the same post through two feeds (a newsletter's substack.com and its own domain) is one post
+                lk = canon_key(it.get("link") or it["id"]) or it["id"]
+                if lk in seen_links:
+                    continue
+                seen_links.add(lk)
             if it["kind"] == "yt":
                 if yc.get("hide_shorts", True) and it.get("short"):  # the fight is against scrolling: Shorts are hidden from the feed, not banned
                     continue
@@ -2305,7 +2310,7 @@ def zulip_reply(topic, content):
         raise RuntimeError("nothing to post")
     _, _, _, stream = zulip_cfg()
     r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic[:60], "content": content.strip()})
-    threading.Thread(target=zulip_fetch_stream, daemon=True).start()
+    zulip_fetch_stream()  # synchronous, so the page can show the thread with the new message right away
     return {"ok": True, "id": r.get("id")}
 
 def zulip_share(item, note="", topic=""):

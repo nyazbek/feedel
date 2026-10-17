@@ -87,6 +87,7 @@ function migrateLocalSeen() {
 }
 
 function render() {
+  captureDrafts();
   document.querySelectorAll('.views button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
   ['feed', 'library', 'following', 'source'].forEach(v => $('#view-' + v).hidden = v !== view);
   if (!data) return;
@@ -94,6 +95,7 @@ function render() {
   else if (view === 'library') renderLibrary();
   else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
+  restoreThreads();
 }
 
 /* ------------------------------------------------------------ discussions (Zulip as the backend) */
@@ -101,6 +103,7 @@ function render() {
 let talk = null;
 async function renderTalk() {
   const L = $('#list');
+  captureDrafts();
   if (!talk) { L.innerHTML = '<div class="empty">reading the stream…</div>'; try { talk = await api('/api/zulip/topics'); } catch (e) { L.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; } }
   if (talk.error) $('#errs').innerHTML = `<div class="err">Zulip: ${esc(talk.error)}</div>`;
   if (!talk.topics.length) { L.innerHTML = `<div class="empty">nothing in #${esc(data.zulip.stream)} yet. “share” on any item starts a topic there.</div>`; return; }
@@ -110,27 +113,62 @@ async function renderTalk() {
     <div class="last">${esc(t.last_who || '')}: ${esc(t.last)}</div>
     ${t.item ? article(t.item).replace(/<div class="disc">[\s\S]*?<\/div>/, '') : ''}
     <div class="acts"><button data-a="disc" data-topic="${esc(t.topic)}">open discussion</button><a class="faint" href="${zulipTopicUrl(t.topic)}" target="_blank" rel="noopener">in Zulip ↗</a></div></div>`).join('');
+  restoreThreads();
 }
 
+// open threads survive re-renders (the feed refreshes itself every minute): host key → {topic, msgs}
+const threads = new Map();
+const hostKey = host => host.dataset.id ? 'id:' + host.dataset.id : 'topic:' + host.dataset.topic;
+function findHost(key) {
+  const [kind, val] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+  return kind === 'id' ? document.querySelector(`article[data-id="${CSS.escape(val)}"]`) : document.querySelector(`.topic[data-topic="${CSS.escape(val)}"]`);
+}
+function threadBox(host) { return host.querySelector(':scope > .thread, :scope > div > .thread'); }
+function renderThread(box, topic, msgs, draft = '') {
+  box.dataset.topic = topic;
+  box.innerHTML = `<div class="row thhead"><span class="meta">${esc(topic)}</span><span class="grow"></span><button class="link" data-a="thread-refresh">refresh</button><button class="link" data-a="thread-close">close</button></div>`
+    + (msgs === null ? '<div class="meta">loading…</div>' : msgs.length ? msgs.map(m => `<div class="msg"><div class="who"><b>${esc(m.who)}</b> · ${ago(m.ts)} ago</div><div class="zc">${m.content}</div></div>`).join('') : '<div class="meta">no messages yet</div>')
+    + `<textarea rows="2" placeholder="reply — markdown and $LaTeX$ work" data-reply>${esc(draft)}</textarea>
+       <div class="row"><button class="solid" data-a="reply" data-topic="${esc(topic)}">post</button><a class="meta" href="${zulipTopicUrl(topic)}" target="_blank" rel="noopener">open in Zulip ↗</a><span class="meta" data-reply-status></span></div>`;
+}
+function mountThread(host, topic, msgs, draft) {
+  let box = threadBox(host);
+  if (!box) { box = document.createElement('div'); box.className = 'thread'; (host.querySelector('.acts') || host).after(box); }
+  renderThread(box, topic, msgs, draft);
+  return box;
+}
 async function openThread(host, topic) {
-  const old = host.querySelector(':scope > .thread, :scope > div > .thread');
-  if (old) { old.remove(); return; }
-  const box = document.createElement('div'); box.className = 'thread'; box.innerHTML = '<span class="meta">loading…</span>';
-  (host.querySelector('.acts') || host).after(box);
-  try {
-    const msgs = await api('/api/zulip/topic?name=' + encodeURIComponent(topic));
-    box.innerHTML = msgs.map(m => `<div class="msg"><div class="who"><b>${esc(m.who)}</b> · ${ago(m.ts)} ago</div><div class="zc">${m.content}</div></div>`).join('')
-      + `<textarea rows="2" placeholder="reply — markdown and $LaTeX$ work" data-reply></textarea>
-         <div class="row"><button class="solid" data-a="reply" data-topic="${esc(topic)}">post</button><a class="meta" href="${zulipTopicUrl(topic)}" target="_blank" rel="noopener">open in Zulip ↗</a><span class="meta" data-reply-status></span></div>`;
-  } catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+  const key = hostKey(host);
+  if (threads.has(key)) { closeThread(host); return; }
+  const box = mountThread(host, topic, null);
+  try { const msgs = await api('/api/zulip/topic?name=' + encodeURIComponent(topic)); threads.set(key, { topic, msgs }); renderThread(box, topic, msgs); box.querySelector('[data-reply]').focus(); }
+  catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+}
+function closeThread(host) { threads.delete(hostKey(host)); threadBox(host)?.remove(); }
+async function refreshThread(host, keepDraft = true) {
+  const key = hostKey(host), t = threads.get(key); if (!t) return;
+  const box = threadBox(host), draft = keepDraft && box ? box.querySelector('[data-reply]')?.value || '' : '';
+  try { t.msgs = await api('/api/zulip/topic?name=' + encodeURIComponent(t.topic)); mountThread(host, t.topic, t.msgs, draft); }
+  catch (e) { toast(e.message); }
+}
+function captureDrafts() {  // before a re-render wipes the DOM, keep what was typed in each open thread
+  for (const [key, t] of threads) { const host = findHost(key), box = host && threadBox(host); if (box) t.draft = box.querySelector('[data-reply]')?.value || ''; }
+}
+function restoreThreads() {
+  for (const [key, t] of threads) { const host = findHost(key); if (host && !threadBox(host)) mountThread(host, t.topic, t.msgs, t.draft || ''); }
 }
 
 async function sendReply(box, topic) {
-  const ta = box.querySelector('[data-reply]'), st = box.querySelector('[data-reply-status]');
+  const ta = box.querySelector('[data-reply]'), st = box.querySelector('[data-reply-status]'), host = box.closest('article, .topic');
   if (!ta.value.trim()) return;
   st.textContent = 'posting…';
-  try { await api('/api/zulip/reply', { topic, content: ta.value }); ta.value = ''; st.textContent = 'posted'; setTimeout(async () => { box.remove(); talk = null; await load(); const host = document.querySelector(`[data-topic="${CSS.escape(topic)}"]`)?.closest('article, .topic'); if (host) openThread(host, topic); }, 1500); }
-  catch (e) { st.textContent = e.message; }
+  try {
+    await api('/api/zulip/reply', { topic, content: ta.value });
+    ta.value = '';
+    await refreshThread(host, false);  // the thread stays open and simply gains the message
+    const b = threadBox(host); if (b) b.querySelector('[data-reply-status]').textContent = 'posted';
+    talk = null;  // the talk list and the "who talks about this" lines catch up on the next load
+  } catch (e) { st.textContent = e.message; }
 }
 
 /* ------------------------------------------------------------ source pages */
@@ -588,6 +626,8 @@ document.addEventListener('click', async e => {
   if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; if (kindFilter === 'talk') talk = null; render(); return; }
   if (b.dataset.a === 'disc') { openThread(b.closest('article, .topic'), b.dataset.topic); return; }
   if (b.dataset.a === 'reply') { sendReply(b.closest('.thread'), b.dataset.topic); return; }
+  if (b.dataset.a === 'thread-close') { closeThread(b.closest('article, .topic')); return; }
+  if (b.dataset.a === 'thread-refresh') { b.textContent = 'refreshing…'; await api('/api/zulip/refresh', {}); await refreshThread(b.closest('article, .topic')); return; }
   if (b.dataset.a === 'src-follow') { const s = src.sub; b.disabled = true; b.textContent = 'adding…'; try { await followRef(s.id, s.kind, s.name); await openSource(s.kind, s.id); } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'follow'; } return; }
   if (b.dataset.tag !== undefined) { tagFilter = tagFilter === b.dataset.tag ? null : b.dataset.tag; render(); return; }
   if (b.dataset.libf) { libKind = b.dataset.libf; render(); return; }

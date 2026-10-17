@@ -37,6 +37,8 @@ h2.sub .meta{font-weight:400}
 .disc{margin-top:6px;font-size:14px;color:var(--mut)}
 .disc button{color:var(--acc)}
 .thread{margin-top:10px;padding:10px 14px;background:var(--soft);border-radius:8px}
+.thread .thhead{margin:0 0 4px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.thread .thhead .meta{font-size:13px}
 .thread .msg{padding:8px 0;border-bottom:1px solid var(--line)}
 .thread .msg:last-of-type{border-bottom:none}
 .thread .who{font-size:13px;color:var(--mut);margin-bottom:2px}
