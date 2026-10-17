@@ -112,7 +112,7 @@ async function renderTalk() {
     <div class="meta">${esc(t.people.join(', '))} · ${t.count} message${t.count > 1 ? 's' : ''} · last ${ago(t.last_ts)} ago</div>
     <div class="last">${esc(t.last_who || '')}: ${esc(t.last)}</div>
     ${t.item ? article(t.item).replace(/<div class="disc">[\s\S]*?<\/div>/, '') : ''}
-    <div class="acts"><button data-a="disc" data-topic="${esc(t.topic)}">open discussion</button><a class="faint" href="${zulipTopicUrl(t.topic)}" target="_blank" rel="noopener">in Zulip ↗</a></div></div>`).join('');
+    <div class="acts"><button data-a="disc" data-topic="${esc(t.topic)}">${threads.has('topic:' + t.topic) ? 'close' : 'open'} discussion</button><a class="faint" href="${zulipTopicUrl(t.topic)}" target="_blank" rel="noopener">in Zulip ↗</a></div></div>`).join('');
   restoreThreads();
 }
 
@@ -133,18 +133,20 @@ function renderThread(box, topic, msgs, draft = '') {
 }
 function mountThread(host, topic, msgs, draft) {
   let box = threadBox(host);
-  if (!box) { box = document.createElement('div'); box.className = 'thread'; (host.querySelector('.acts') || host).after(box); }
+  if (!box) { box = document.createElement('div'); box.className = 'thread'; (host.querySelector(':scope > .acts, :scope > div > .acts') || host).after(box); }
   renderThread(box, topic, msgs, draft);
   return box;
 }
+function discLabel(host, open) { const b = host.querySelector(':scope > .acts [data-a=disc], :scope > div > .disc [data-a=disc], :scope > div > .acts [data-a=disc]'); if (b) b.textContent = (open ? 'close' : 'open') + ' discussion'; }
 async function openThread(host, topic) {
   const key = hostKey(host);
   if (threads.has(key)) { closeThread(host); return; }
   const box = mountThread(host, topic, null);
+  discLabel(host, true);
   try { const msgs = await api('/api/zulip/topic?name=' + encodeURIComponent(topic)); threads.set(key, { topic, msgs }); renderThread(box, topic, msgs); box.querySelector('[data-reply]').focus(); }
-  catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+  catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; discLabel(host, false); }
 }
-function closeThread(host) { threads.delete(hostKey(host)); threadBox(host)?.remove(); }
+function closeThread(host) { threads.delete(hostKey(host)); threadBox(host)?.remove(); discLabel(host, false); }
 async function refreshThread(host, keepDraft = true) {
   const key = hostKey(host), t = threads.get(key); if (!t) return;
   const box = threadBox(host), draft = keepDraft && box ? box.querySelector('[data-reply]')?.value || '' : '';
@@ -282,7 +284,8 @@ function srcBtn(i) {
 function discLine(i) {
   const d = data.discussions && data.discussions[i.id];
   if (!d) return '';
-  return `<div class="disc">${esc(d.people.slice(0, 3).join(', '))}${d.people.length > 3 ? ' and others' : ''} talk about this · ${d.count} message${d.count > 1 ? 's' : ''} · last ${ago(d.last_ts)} ago · <button data-a="disc" data-topic="${esc(d.topic)}">open discussion</button></div>`;
+  const open = threads.has('id:' + i.id);
+  return `<div class="disc">${esc(d.people.slice(0, 3).join(', '))}${d.people.length > 3 ? ' and others' : ''} talk about this · ${d.count} message${d.count > 1 ? 's' : ''} · last ${ago(d.last_ts)} ago · <button data-a="disc" data-topic="${esc(d.topic)}">${open ? 'close' : 'open'} discussion</button></div>`;
 }
 function zulipTopicUrl(topic) {
   const z = data.zulip || {}, enc = s => encodeURIComponent(s).replace(/%/g, '.');
