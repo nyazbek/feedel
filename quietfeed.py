@@ -53,7 +53,6 @@ DEFAULT_CONFIG = {
     "youtube": {
         "channels": ["@veritasium", "@3blue1brown"],
         "min_minutes": 8,
-        "hide_shorts": True,
     },
     "twitter": {
         "users": [],
@@ -1129,7 +1128,7 @@ def visible_items():
             if sub is None or sub.get("muted"):
                 continue
             if it["kind"] == "yt":
-                if yc.get("hide_shorts", True) and it.get("short"):
+                if it.get("short"):  # Shorts are never shown; there is no setting for it on purpose
                     continue
                 mm = sub.get("min_minutes")
                 if mm is None:
@@ -1155,7 +1154,7 @@ def visible_items():
 
 def settings_payload():
     z = CONFIG.get("zulip") or {}
-    return {"hide_shorts": CONFIG["youtube"].get("hide_shorts", True), "min_minutes": CONFIG["youtube"].get("min_minutes", 0),
+    return {"min_minutes": CONFIG["youtube"].get("min_minutes", 0),
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
@@ -1176,8 +1175,6 @@ def items_payload():
 
 def update_settings(patch):
     with LOCK:
-        if "hide_shorts" in patch:
-            CONFIG["youtube"]["hide_shorts"] = bool(patch["hide_shorts"])
         if "min_minutes" in patch:
             CONFIG["youtube"]["min_minutes"] = max(0, int(patch["min_minutes"] or 0))
         if "max_per_channel" in patch:
@@ -1633,7 +1630,13 @@ def ytdlp_exe():
     return find_exe("yt-dlp") or (sys.executable if FROZEN else None)
 
 def play(video_id):
-    url = f"https://www.youtube.com/watch?v={video_id}"
+    return play_url(f"https://www.youtube.com/watch?v={video_id}")
+
+def playable_url(url):
+    """Only YouTube videos and X posts may be handed to the player."""
+    return link_kind(url) in ("yt", "tw") and url.startswith("https://")
+
+def play_url(url):
     cmd = [a.replace("{url}", url) for a in CONFIG.get("player", [])]
     exe = find_exe(cmd[0]) if cmd else None
     if not exe:
@@ -1643,7 +1646,7 @@ def play(video_id):
                 cmd = [alt, "--ytdl-format=bestvideo[height<=1080]+bestaudio/best", url]
                 break
     if not exe:
-        return download(video_id, open_after=True)
+        return download_url(url, open_after=True)
     cmd[0] = exe
     ytdl = ytdlp_exe()
     if ytdl and os.path.basename(exe).lower().startswith("mpv") and not shutil.which("yt-dlp"):
@@ -1653,31 +1656,40 @@ def play(video_id):
     return f"playing in {os.path.basename(exe)}"
 
 def download(video_id, open_after=False):
+    return download_url(f"https://www.youtube.com/watch?v={video_id}", open_after)
+
+def download_url(url, open_after=False):
+    """Download a YouTube video or an X post's video with yt-dlp (in-process, no console), optionally opening it after."""
     try:
         import yt_dlp
     except ImportError:
         return "yt-dlp not found: run `pip install yt-dlp` (and install mpv for streaming)"
     d = CONFIG.get("download_dir") or os.path.join(HERE, "downloads")
     os.makedirs(d, exist_ok=True)
-    out = os.path.join(d, "%(title)s [%(id)s].%(ext)s")
+    out = os.path.join(d, "%(title).80s [%(id)s].%(ext)s")
 
     def run():
         try:
-            with yt_dlp.YoutubeDL({"format": "bestvideo[height<=1080]+bestaudio/best", "outtmpl": out,
-                                   "quiet": True, "no_warnings": True, "noprogress": True}) as y:
-                y.download([f"https://www.youtube.com/watch?v={video_id}"])
+            with yt_dlp.YoutubeDL({"format": "bestvideo[height<=1080]+bestaudio/best", "outtmpl": out, "noplaylist": True,
+                                   "quiet": True, "no_warnings": True, "noprogress": True, "logger": _QuietLogger()}) as y:
+                info = y.extract_info(url, download=True)
         except Exception as ex:
             log("download failed:", ex)
             return
-        if open_after:
-            for f in os.listdir(d):
-                if f"[{video_id}]" in f and not f.endswith(".part"):
-                    p = os.path.join(d, f)
-                    if hasattr(os, "startfile"):
-                        os.startfile(p)
-                    else:
-                        subprocess.Popen(["xdg-open", p])
-                    break
+        if info and info.get("_type") == "playlist":
+            entries = [e for e in (info.get("entries") or []) if e]
+            info = entries[0] if entries else None
+        path = None
+        if info:
+            rd = info.get("requested_downloads") or []
+            path = rd[0].get("filepath") if rd else None
+            if not path and info.get("id"):
+                path = next((os.path.join(d, f) for f in os.listdir(d) if f"[{info['id']}]" in f and not f.endswith(".part")), None)
+        if open_after and path and os.path.exists(path):
+            if hasattr(os, "startfile"):
+                os.startfile(path)
+            else:
+                subprocess.Popen(["xdg-open", path])
     threading.Thread(target=run, daemon=True).start()
     return "downloading to " + d + (" (will open when done)" if open_after else "")
 
@@ -1741,6 +1753,14 @@ def resolve_link(url, via=""):
         elif qs.get("v"):
             vid = qs["v"][0]
         if vid and re.fullmatch(r"[\w-]{11}", vid):
+            short = CACHE["shorts"].get(vid)
+            if short is None:
+                code, _ = head_no_redirect(f"https://www.youtube.com/shorts/{vid}")
+                short = (code == 200) if code else "/shorts/" in url
+                if code:
+                    cache_put("shorts", vid, short)
+            if short:
+                raise RuntimeError("that is a YouTube Short; quietfeed does not show Shorts")
             watch = f"https://www.youtube.com/watch?v={vid}"
             info = json.loads(fetch("https://www.youtube.com/oembed?" + urlencode({"url": watch, "format": "json"}), timeout=15))
             it = {"kind": "yt", "id": vid, "title": info.get("title", ""), "author": info.get("author_name", ""), "ts": now, "desc": "", "link": watch}
@@ -1760,7 +1780,7 @@ def resolve_link(url, via=""):
                     it["ts"] = iso_ts(m.group(1) + "T12:00:00+00:00") or now
             except Exception as ex:
                 log("  watch page", vid, ex)
-            it["short"] = "/shorts/" in url
+            it["short"] = False
             return it
         if parts and (parts[0].startswith("@") or parts[0] in ("channel", "c", "user")):
             k, ref = parse_ref(url, "yt")
@@ -1785,8 +1805,10 @@ def resolve_link(url, via=""):
                 except Exception:
                     pass
             handle = (am.group(2) if am else user).lower()
-            return {"kind": "tw", "id": canon, "title": text, "author": "@" + handle, "ts": ts, "desc": "", "link": canon,
-                    "follow": {"kind": "tw", "ref": handle, "name": html.unescape(am.group(1)) if am else "@" + handle}}
+            it = {"kind": "tw", "id": canon, "title": text, "author": "@" + handle, "ts": ts, "desc": "", "link": canon,
+                  "follow": {"kind": "tw", "ref": handle, "name": html.unescape(am.group(1)) if am else "@" + handle}}
+            it.update(tw_video_info(canon) or {})  # a video in the post makes it playable, in the inbox only
+            return it
         if parts and re.fullmatch(r"[A-Za-z0-9_]{1,15}", parts[0]) and parts[0].lower() not in ("i", "home", "search", "explore", "settings", "intent"):
             handle = parts[0].lower()
             return {"kind": "follow", "id": url, "title": "@" + handle + " on X", "author": "", "ts": now, "link": f"https://x.com/{handle}",
@@ -1817,6 +1839,32 @@ def resolve_link(url, via=""):
         href = html.unescape(hm.group(1))
         it["follow"] = {"kind": "rss", "ref": href if href.startswith("http") else f"{u.scheme}://{u.netloc}/" + href.lstrip("/"), "name": site}
     return it
+
+def tw_video_info(url):
+    """Does this X post carry a video? Asked through yt-dlp without downloading. None when there is none or
+    yt-dlp is unavailable. Returns {video, thumb, dur} otherwise."""
+    try:
+        import yt_dlp
+    except ImportError:
+        return None
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
+                               "socket_timeout": 10, "retries": 1, "logger": _QuietLogger()}) as y:
+            info = y.extract_info(url, download=False)
+    except Exception:
+        return None
+    if info and info.get("_type") == "playlist":
+        entries = [e for e in (info.get("entries") or []) if e]
+        info = entries[0] if entries else None
+    if not info or not (info.get("formats") or info.get("url")):
+        return None
+    return {"video": True, "thumb": info.get("thumbnail") or "", "dur": info.get("duration")}
+
+class _QuietLogger:
+    def debug(self, *a): pass
+    def info(self, *a): pass
+    def warning(self, *a): pass
+    def error(self, *a): pass
 
 def inbox_take(url, via=""):
     """Resolve a link and put it in the inbox (or refresh it if it is already there). Returns the item."""
@@ -2159,7 +2207,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/img":  # search-result avatars; only Google's image hosts are allowed through
                 u = q.get("u", [""])[0]
                 host = urlparse(u).netloc
-                if u.startswith("https://") and (host.endswith("ggpht.com") or host.endswith("googleusercontent.com")):
+                if u.startswith("https://") and (host.endswith("ggpht.com") or host.endswith("googleusercontent.com") or host.endswith("twimg.com")):
                     try:
                         return self._send(fetch(u, timeout=10), "image/jpeg")
                     except Exception:
@@ -2190,6 +2238,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(play(vid), "text/plain")
             if p.path == "/api/dl" and vid:
                 return self._send(download(vid), "text/plain")
+            if p.path in ("/api/play_url", "/api/dl_url"):
+                u = str(self._json().get("url", "")).strip()
+                if not playable_url(u):
+                    return self._send({"error": "only YouTube videos and X posts can be played"}, code=400)
+                if p.path == "/api/play_url":
+                    mark([u], "seen", True)
+                    return self._send(play_url(u), "text/plain")
+                return self._send(download_url(u), "text/plain")
             if p.path == "/api/quit":
                 self._send("bye", "text/plain")
                 threading.Timer(0.5, lambda: os._exit(0)).start()

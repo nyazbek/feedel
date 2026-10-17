@@ -18,7 +18,7 @@ First run creates `quietfeed.db` next to the program and opens the page. Standar
 
 ## What is in the feed
 
-- **videos** from YouTube channels, with Shorts dropped and a minimum length, played in mpv.
+- **videos** from YouTube channels, with a minimum length, played in mpv. Shorts are never shown, anywhere, and a Shorts link pasted into the inbox is refused; there is no setting for it on purpose.
 - **tweets** from X accounts, text only, through a Nitter mirror (see the caveat at the end).
 - **posts** from Substack and any RSS/Atom feed; open in the browser.
 - **papers** from arXiv: categories (`math.PR`, `cs.LG`, or `math` for a whole archive), authors, or keyword watches. In the *all* view, papers fold into one line per day ("12 new papers") so they never drown the rest; the *papers* chip opens them properly.
@@ -65,7 +65,7 @@ A link someone sends you on WhatsApp, in mail or anywhere else can be opened in 
 - **Clipboard watcher** (settings): with it on, every link you *copy* that quietfeed can show lands in the inbox by itself. Copy a link in WhatsApp, switch to quietfeed, it is there. A second checkbox widens it from YouTube, X and arXiv links to every link. Only the clipboard text is read, only links are looked at, and nothing leaves the machine except the fetch of that link's own page.
 - **Make quietfeed the link handler** (Windows): run `quietfeed --register-handler` (or `python quietfeed.py --register-handler`), then pick *quietfeed* under *Settings → Apps → Default apps → Web browser*. From then on a click on any link in any app goes through quietfeed: videos, posts and papers open in the inbox, everything else is handed to your normal browser: whatever your default was when you registered (quietfeed remembers it, since afterwards the default is quietfeed itself), shown and changeable under the gear as *send the links it cannot show to*. `--unregister-handler` undoes it. `quietfeed --open URL` is the same thing from a terminal.
 
-Tweets are read through X's public embed endpoint, which needs no login and works for public posts.
+Tweets are read through X's public embed endpoint, which needs no login and works for public posts. A post that carries a video gets a thumbnail, play and download in the inbox (through yt-dlp, no login), and only there: the feed stays text.
 
 ## Sharing to Zulip
 
@@ -79,7 +79,7 @@ Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e
 
 ## Settings (the gear)
 
-Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, hide Shorts, minimum video length, a per-source cap so one prolific channel cannot drown the rest, and block words (`/regex/` allowed). The theme button cycles auto / light / dark.
+Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, minimum video length, a per-source cap so one prolific channel cannot drown the rest, and block words (`/regex/` allowed). The theme button cycles auto / light / dark.
 
 ## Building the executable
 

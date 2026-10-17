@@ -181,10 +181,14 @@ function article(i) {
       <div class="acts"><button data-a="play">▶ play</button><button data-a="dl">↓ download</button>${saveBtn}${seenBtn}</div></div></article>`;
   }
   if (i.kind === 'tw') {
-    return `<article class="${cls}" data-id="${esc(i.id)}"><div>
+    // a video in a post is shown only for inbox items (things you chose to open), never in the feed
+    const vid = i.video && i.cid === 'inbox';
+    const thumb = vid && i.thumb && !data.settings.hide_thumbnails ? `<img loading="lazy" src="/img?u=${encodeURIComponent(i.thumb)}" alt="">` : '';
+    const playBtns = vid ? `<button data-a="playurl">▶ play${i.dur ? ' · ' + dur(i.dur) : ''}</button><button data-a="dlurl">↓ download</button>` : '';
+    return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
       <div class="by">${esc(i.author)} · ${ago(i.ts)} ago${tags}</div>
       <div class="tweet">${esc(i.title)}</div>
-      <div class="acts">${saveBtn}${seenBtn}</div></div></article>`;
+      <div class="acts">${playBtns}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div></div></article>`;
   }
   if (i.kind === 'rss') {
     return `<article class="${cls}" data-id="${esc(i.id)}"><div>
@@ -299,7 +303,7 @@ function queueLibUpdate(id, patch) {
 
 function fillSettings() {
   const s = data.settings;
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) $('#s_' + k).checked = !!s[k];
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'watch_clipboard', 'clipboard_any']) $('#s_' + k).checked = !!s[k];
   $('#s_min_minutes').value = s.min_minutes ?? 0;
   $('#s_max_per_channel').value = s.max_per_channel ?? 0;
   $('#s_block_words').value = (s.block_words || []).join('\n');
@@ -318,7 +322,7 @@ async function testZulip() {
 }
 async function saveSettings(keepOpen) {
   const patch = {};
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) patch[k] = $('#s_' + k).checked;
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'watch_clipboard', 'clipboard_any']) patch[k] = $('#s_' + k).checked;
   patch.min_minutes = +$('#s_min_minutes').value || 0;
   patch.max_per_channel = +$('#s_max_per_channel').value || 0;
   patch.block_words = $('#s_block_words').value;
@@ -563,6 +567,12 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'search-author') { const a = art.querySelector('.menu').dataset.author; kindFilter = 'arxiv'; $('#ax_author').value = a; $('#ax_q').value = ''; $('#ax_from').value = $('#ax_to').value = ''; render(); searchArxiv(); window.scrollTo(0, 0); return; }
   if (b.dataset.a === 'seen') return setMark(id, 'seen', !seen.has(id));
   if (b.dataset.a === 'save') return setMark(id, 'saved', !saved.has(id));
+  if (b.dataset.a === 'playurl' || b.dataset.a === 'dlurl') {
+    const it = findItem(id);
+    try { toast(await api(b.dataset.a === 'playurl' ? '/api/play_url' : '/api/dl_url', { url: it.link })); if (b.dataset.a === 'playurl') { seen.add(id); render(); } }
+    catch (err) { toast(err.message); }
+    return;
+  }
   if (b.dataset.a === 'play' || b.dataset.a === 'dl') {
     const r = await fetch('/api/' + b.dataset.a + '?id=' + encodeURIComponent(id), { method: 'POST' });
     toast(await r.text());
