@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>quietfeed</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>try{const t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+<header>
+  <h1>quietfeed</h1>
+  <nav class="views">
+    <button data-v="feed" class="on">feed</button>
+    <button data-v="library">library</button>
+    <button data-v="following">following</button>
+  </nav>
+  <div class="tools">
+    <button id="theme" class="icon" title="theme: auto / light / dark">◐</button>
+    <button id="gear" class="icon" title="settings">⚙</button>
+  </div>
+</header>
+
+<div id="settings" class="panel" hidden>
+  <div class="grid2">
+    <label><input type="checkbox" id="s_hide_thumbnails"> hide thumbnails</label>
+    <label><input type="checkbox" id="s_calm_titles"> calm titles (no SHOUTING, one “!” at most)</label>
+    <label><input type="checkbox" id="s_hide_seen"> hide what I've already seen</label>
+    <label><input type="checkbox" id="s_hide_shorts"> hide Shorts</label>
+    <label>skip videos shorter than <input type="number" id="s_min_minutes" min="0" class="num"> min</label>
+    <label>at most <input type="number" id="s_max_per_channel" min="0" class="num"> items per source (0 = no cap)</label>
+  </div>
+  <label class="block">hide anything whose title contains (one per line; wrap in / / for a regex)
+    <textarea id="s_block_words" rows="3" placeholder="giveaway&#10;reacts to&#10;/\b(top|best) \d+\b/"></textarea></label>
+  <div class="row"><button id="s_save" class="solid">save</button><span class="meta">per-source overrides live in the following tab</span>
+    <span class="grow"></span><button id="quit" class="link">quit quietfeed</button></div>
+</div>
+
+<section id="view-feed">
+  <div class="bar">
+    <div class="chips" id="chips"></div>
+    <span class="grow"></span>
+    <span class="meta" id="when"></span>
+    <button id="rf" class="link">refresh</button>
+  </div>
+  <div id="papers" class="toolbar" hidden>
+    <div class="chips" id="windows">
+      <button data-w="1" class="on" title="the newest listing you have">latest</button><button data-w="3">3 days</button><button data-w="7">week</button><button data-w="0">all</button>
+    </div>
+    <form id="axsearch" class="row">
+      <input id="ax_q" placeholder="keywords (quote a phrase)" autocomplete="off">
+      <input id="ax_author" placeholder="author" autocomplete="off" list="authors">
+      <datalist id="authors"></datalist>
+      <input id="ax_from" type="date" title="from"><input id="ax_to" type="date" title="to">
+      <select id="ax_sort"><option value="submittedDate">newest</option><option value="lastUpdatedDate">last updated</option><option value="relevance">relevance</option></select>
+      <button class="solid">search arXiv</button><button type="button" id="ax_clear" class="link" hidden>back to my papers</button>
+    </form>
+  </div>
+  <div id="errs"></div>
+  <div id="list"></div>
+</section>
+
+<section id="view-library" hidden>
+  <div class="bar">
+    <div class="chips" id="libchips"></div>
+    <span class="grow"></span>
+    <input id="libsearch" placeholder="search saved items" autocomplete="off">
+  </div>
+  <p class="meta">what you set aside. give things a tag or a note so you can find them again; nothing here expires.</p>
+  <div id="liblist"></div>
+</section>
+
+<section id="view-following" hidden>
+  <div class="panel">
+    <h2>follow something</h2>
+    <form id="addf" class="row">
+      <input id="addq" placeholder="a channel name, @handle or link" autocomplete="off">
+      <select id="addkind">
+        <option value="yt">YouTube</option><option value="tw">X / Twitter</option>
+        <option value="rss">Substack / RSS</option><option value="arxiv">arXiv</option>
+      </select>
+      <button class="solid">go</button>
+    </form>
+    <p class="meta" id="addhint"></p>
+    <div id="results"></div>
+  </div>
+
+  <div class="panel">
+    <h2>keep in sync with your accounts</h2>
+    <p class="meta">Once connected, every refresh adds whatever you have newly subscribed to. Nothing is ever unfollowed automatically, and the app only reads.</p>
+    <div class="row sync"><b>YouTube account</b><span class="meta" id="gstatus">…</span><span class="grow"></span>
+      <button id="gconnect" class="solid">connect Google account</button><button id="gdisconnect" class="link" hidden>disconnect</button></div>
+    <div class="row sync"><b>Browser session</b><span class="meta">re-read subscriptions from</span>
+      <select id="syncbrowser"><option value="">off</option><option>firefox</option><option>chrome</option><option>edge</option><option>brave</option><option>vivaldi</option><option>opera</option><option>chromium</option></select>
+      <span class="meta" id="bstatus"></span></div>
+    <div class="row sync"><b>X</b><span class="meta" id="xstatus">drop your archive's following.js below; ids are resolved to handles in the background</span></div>
+    <div class="row"><button id="syncnow" class="link">sync now</button></div>
+  </div>
+
+  <div class="panel">
+    <h2>import</h2>
+    <p class="meta">
+      <b>YouTube:</b> <a href="https://takeout.google.com/" target="_blank" rel="noopener">Google Takeout</a> → deselect all → tick
+      “YouTube and YouTube Music” → “all YouTube data included” → keep only <i>subscriptions</i> → export, then drop <code>subscriptions.csv</code> here.
+      OPML files and plain lists work too: one entry per line, links, @handles, channel ids or channel names as they appear on YouTube.<br>
+      <b>X:</b> your archive's <code>data/following.js</code>, or handles.
+      <b>Substack / RSS:</b> site or feed links, or an OPML export from another reader.
+      <b>arXiv:</b> categories like <code>math.PR</code>, authors as <code>au:Name Surname</code>.
+    </p>
+    <div class="drop" id="drop">
+      <input type="file" id="file" multiple accept=".csv,.opml,.xml,.js,.txt,.json">
+      <span>drop files here or click to choose</span>
+    </div>
+    <textarea id="paste" rows="4" placeholder="…or paste entries, one per line"></textarea>
+    <div class="row">
+      <label class="meta">bare names and @handles are
+        <select id="importkind"><option value="yt">YouTube</option><option value="tw">X</option><option value="rss">RSS</option><option value="arxiv">arXiv</option></select>
+      </label>
+      <button id="importbtn" class="solid">import</button>
+      <span class="grow"></span>
+      <span class="meta">signed in to YouTube in a browser?</span>
+      <select id="browser"><option>firefox</option><option>chrome</option><option>edge</option><option>brave</option><option>vivaldi</option><option>opera</option><option>chromium</option></select>
+      <button id="browserbtn" class="link">pull subscriptions from it</button>
+    </div>
+    <div id="importout" class="out" hidden></div>
+  </div>
+
+  <div class="panel">
+    <h2>following <span class="meta" id="subcount"></span></h2>
+    <div class="row">
+      <input id="subfilter" placeholder="filter by name, handle or tag" autocomplete="off">
+      <select id="subsort"><option value="kind">by kind</option><option value="name">by name</option><option value="added">recently added</option><option value="tag">by tag</option></select>
+    </div>
+    <div id="subs"></div>
+  </div>
+</section>
+</main>
+<div id="msg"></div>
+<script src="/app.js"></script>
+</body>
+</html>

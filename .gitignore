@@ -1,0 +1,19 @@
+# your own data — never commit these
+config.json
+state.json
+cache.json
+cache/
+downloads/
+quietfeed.log
+client_secret.json
+google_token.json
+*.db
+
+# build output
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+*.orig
+.DS_Store

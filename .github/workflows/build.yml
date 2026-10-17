@@ -1,0 +1,57 @@
+# Builds a single-file quietfeed for Windows and macOS.
+# Runs on every tag that starts with "v" (git tag v0.2 && git push --tags) and attaches
+# the binaries to a GitHub release; can also be run by hand from the Actions tab.
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            sep: ";"
+            built: dist/quietfeed.exe
+            asset: quietfeed-windows.exe
+          - os: macos-latest
+            sep: ":"
+            built: dist/quietfeed
+            asset: quietfeed-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller yt-dlp
+      - name: build
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name quietfeed --add-data "web${{ matrix.sep }}web" --collect-submodules yt_dlp quietfeed.py
+      - name: smoke test (serves the page and answers as yt-dlp)
+        shell: bash
+        run: |
+          cp "${{ matrix.built }}" "${{ matrix.asset }}"
+          mkdir smoke && cd smoke
+          "../${{ matrix.asset }}" --no-open --port 8799 &
+          sleep 8
+          curl -fsS localhost:8799/api/items > /dev/null
+          curl -fsS -X POST localhost:8799/api/quit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+      - name: attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" "${{ matrix.asset }}" --clobber
