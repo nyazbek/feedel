@@ -48,6 +48,12 @@
     <label>your e-mail <input id="z_email" placeholder="you@example.com"></label>
     <label>API key <input id="z_key" type="password" placeholder="Zulip → settings → account → API key" autocomplete="off"></label>
   </div>
+  <div class="grid2 streams">
+    <label>videos go to # <input id="z_s_yt" placeholder="(default stream)"></label>
+    <label>papers go to # <input id="z_s_arxiv" placeholder="(default stream)"></label>
+    <label>posts go to # <input id="z_s_rss" placeholder="(default stream)"></label>
+    <label>tweets go to # <input id="z_s_tw" placeholder="(default stream)"></label>
+  </div>
   <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
   <div class="row"><button id="s_save" class="solid">save</button><span class="meta">per-source overrides live in the following tab</span>
     <span class="grow"></span><button id="quit" class="link">quit quietfeed</button></div>
@@ -160,6 +166,12 @@
       <select id="subsort"><option value="kind">by kind</option><option value="name">by name</option><option value="added">recently added</option><option value="tag">by tag</option></select>
     </div>
     <div id="subs"></div>
+  </div>
+
+  <div class="panel" id="unfpanel" hidden>
+    <h2>previously unfollowed <span class="meta" id="unfcount"></span></h2>
+    <p class="meta">An unfollow is remembered: syncs and imports leave these alone instead of adding them back. Follow again when you change your mind, or forget one so a future import may add it.</p>
+    <div id="unf"></div>
   </div>
 </section>
 </main>

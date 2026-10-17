@@ -75,7 +75,8 @@ DEFAULT_CONFIG = {
     # "browser": name of a browser signed in to YouTube whose subscriptions are re-read on every refresh (needs yt-dlp)
     "sync": {"browser": ""},
     # where the conversation lives: "share" posts an item and your note to this stream, as you, with your own API key
-    "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed"},
+    # "streams": where each kind of share goes (videos → #vids, papers → #papers…); empty means the default stream
+    "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""}},
     "player": ["mpv", "--ytdl-format=bestvideo[height<=1080]+bestaudio/best", "{url}"],
     "download_dir": os.path.join(HERE, "downloads"),
     "refresh_minutes": 30,
@@ -239,6 +240,9 @@ CREATE TABLE IF NOT EXISTS comments (
     id INTEGER PRIMARY KEY, share_id INTEGER NOT NULL REFERENCES shares(id), user_id INTEGER NOT NULL REFERENCES users(id),
     parent_id INTEGER REFERENCES comments(id), body TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS cache (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (kind, key));
+CREATE TABLE IF NOT EXISTS unfollowed (  -- an unfollow is a decision: syncs and imports do not quietly undo it
+    user_id INTEGER NOT NULL REFERENCES users(id), kind TEXT NOT NULL, ref TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+    removed INTEGER NOT NULL, PRIMARY KEY (user_id, kind, ref));
 CREATE TABLE IF NOT EXISTS inbox (  -- links handed to quietfeed from elsewhere (clipboard, the link box, the URL handler)
     user_id INTEGER NOT NULL REFERENCES users(id), url TEXT NOT NULL, item_json TEXT NOT NULL, via TEXT NOT NULL DEFAULT '',
     added INTEGER NOT NULL, PRIMARY KEY (user_id, url));
@@ -427,6 +431,24 @@ def inbox_add(url, item, via=""):
 def inbox_remove(url):
     with tx() as db:
         db.execute("DELETE FROM inbox WHERE user_id = ? AND url = ?", (USER_ID, url))
+
+def unfollowed_list():
+    with LOCK:
+        rows = DB.execute("SELECT kind, ref, name, removed FROM unfollowed WHERE user_id = ? ORDER BY removed DESC", (USER_ID,)).fetchall()
+    return [dict(r) for r in rows]
+
+def is_unfollowed(kind, ref):
+    with LOCK:
+        return DB.execute("SELECT 1 FROM unfollowed WHERE user_id = ? AND kind = ? AND ref = ?", (USER_ID, kind, ref)).fetchone() is not None
+
+def unfollowed_add(kind, ref, name=""):
+    with tx() as db:
+        db.execute("INSERT OR REPLACE INTO unfollowed (user_id, kind, ref, name, removed) VALUES (?, ?, ?, ?, ?)",
+                   (USER_ID, kind, ref, name or "", int(time.time())))
+
+def unfollowed_remove(kind, ref):
+    with tx() as db:
+        db.execute("DELETE FROM unfollowed WHERE user_id = ? AND kind = ? AND ref = ?", (USER_ID, kind, ref))
 
 def export_data():
     """Everything in the database as one JSON-able dict: the old config / state / cache shapes plus the stored items."""
@@ -641,10 +663,12 @@ def add_sub(kind, info):
 def remove_sub(kind, id_):
     with LOCK:
         lst = sub_list(kind)
-        before = len(lst)
+        gone = [s for s in lst if s.get("id") == id_]
         lst[:] = [s for s in lst if s.get("id") != id_]
         save_config()
-        return len(lst) < before
+    if gone:
+        unfollowed_add(kind, id_, gone[0].get("name") or "")
+    return bool(gone)
 
 def update_sub(kind, id_, patch):
     with LOCK:
@@ -1214,6 +1238,8 @@ def settings_payload():
     return {"hide_shorts": CONFIG["youtube"].get("hide_shorts", True), "min_minutes": CONFIG["youtube"].get("min_minutes", 0),
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
+                      "streams": {k: zulip_stream_for(k) for k in KINDS}, "streams_set": z.get("streams") or {},
+                      "all_streams": zulip_all_streams(),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             **CONFIG["ui"]}
@@ -1242,7 +1268,7 @@ def discussions_payload():
     for it in STATE["items"] + inbox_list() + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]:
         t = idx.get(item_key(it) or "") or idx.get("title:" + (it.get("title") or "")[:60].lower())
         if t and it.get("id") not in out:
-            out[it["id"]] = {k: t[k] for k in ("topic", "count", "people", "last_ts")}
+            out[it["id"]] = {k: t[k] for k in ("topic", "stream", "count", "people", "last_ts")}
     return out
 
 def update_settings(patch):
@@ -1270,6 +1296,8 @@ def update_settings(patch):
                 z["api_key"] = str(patch["zulip"]["api_key"]).strip()
             if patch["zulip"].get("clear_key"):
                 z["api_key"] = ""
+            if isinstance(patch["zulip"].get("streams"), dict):
+                z["streams"] = {k: str(patch["zulip"]["streams"].get(k, "")).strip().lstrip("#") for k in KINDS}
         save_config()
         return settings_payload()
 
@@ -1397,10 +1425,12 @@ def parse_import(text, filename="", default_kind="yt"):
             bad.append(tok)
     return entries, bad
 
-def add_entries(entries, trigger_refresh=True):
+def add_entries(entries, trigger_refresh=True, respect_unfollowed=False):
     """Follow each parsed entry. YouTube ids with a name are added instantly (avatar filled in on refresh);
-    handles/URLs/names are resolved in parallel; X numeric ids are resolved now or queued. Returns a summary."""
-    added, skipped, failed, pending = [], 0, [], []
+    handles/URLs/names are resolved in parallel; X numeric ids are resolved now or queued. Returns a summary.
+    With respect_unfollowed (syncs and imports), sources you unfollowed earlier are left alone and listed;
+    without it (you typed it yourself), following again also forgets the unfollow."""
+    added, skipped, failed, pending, unfollowed = [], 0, [], [], []
     seen, todo = set(), []
     for e in entries:
         key = (e["kind"], e["ref"].lower())
@@ -1454,7 +1484,11 @@ def add_entries(entries, trigger_refresh=True):
         results = list(ex.map(one, todo))
     for e, (status, payload) in zip(todo, results):
         if status == "add":
+            if respect_unfollowed and is_unfollowed(e["kind"], payload["id"]):
+                unfollowed.append(payload.get("name") or payload.get("handle") or payload["id"])
+                continue
             if add_sub(e["kind"], payload):
+                unfollowed_remove(e["kind"], payload["id"])
                 added.append({"kind": e["kind"], **payload})
             else:
                 skipped += 1
@@ -1471,7 +1505,7 @@ def add_entries(entries, trigger_refresh=True):
             save_config()
     if added and trigger_refresh:
         threading.Thread(target=refresh, daemon=True).start()
-    return {"added": added, "skipped": skipped, "failed": failed, "pending": len(pending)}
+    return {"added": added, "skipped": skipped, "failed": failed, "pending": len(pending), "unfollowed": unfollowed}
 
 def resolve_pending_x(limit=100):
     """X archive ids that could not be resolved at import time are retried here, a batch per refresh."""
@@ -1483,7 +1517,8 @@ def resolve_pending_x(limit=100):
     done = []
     for num, h in zip(pend, handles):
         if h:
-            add_sub("tw", {"id": h})
+            if not is_unfollowed("tw", h):
+                add_sub("tw", {"id": h})
             done.append(num)
     if done:
         with LOCK:
@@ -1647,7 +1682,7 @@ def sync_accounts():
     try:
         chans = yt_account_subscriptions()
         if chans is not None:
-            r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans], trigger_refresh=False)
+            r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans], trigger_refresh=False, respect_unfollowed=True)
             SYNC["google"] = {"ok": True, "count": len(chans), "added": len(r["added"]), "at": time.time()}
             if r["added"]:
                 log(f"  YouTube account sync: {len(r['added'])} new of {len(chans)}")
@@ -1658,7 +1693,7 @@ def sync_accounts():
     if b:
         try:
             chans = import_from_browser(b)
-            r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans], trigger_refresh=False)
+            r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans], trigger_refresh=False, respect_unfollowed=True)
             SYNC["browser"] = {"ok": True, "count": len(chans), "added": len(r["added"]), "at": time.time()}
         except Exception as ex:
             SYNC["browser"] = {"ok": False, "error": str(ex), "at": time.time()}
@@ -2195,6 +2230,20 @@ def zulip_ready():
     site, email, key, _ = zulip_cfg()
     return bool(site and email and key)
 
+def zulip_stream_for(kind):
+    """The stream a share of this kind goes to: the per-kind one if set, else the default."""
+    z = CONFIG.get("zulip") or {}
+    return ((z.get("streams") or {}).get(kind) or "").strip() or zulip_cfg()[3]
+
+def zulip_all_streams():
+    """Every stream quietfeed reads: the default plus each per-kind one, without repeats."""
+    out = [zulip_cfg()[3]]
+    for k in KINDS:
+        s = zulip_stream_for(k)
+        if s not in out:
+            out.append(s)
+    return out
+
 def zulip_request(path, data=None, params=None):
     """One call to the Zulip REST API, authenticated as you (e-mail + personal API key). `data` posts, `params` gets."""
     site, email, key, _ = zulip_cfg()
@@ -2252,19 +2301,20 @@ def zulip_fetch_stream():
         return None
     site, _, _, stream = zulip_cfg()
     try:
-        r = zulip_request("/messages", params={"anchor": "newest", "num_before": 400, "num_after": 0, "apply_markdown": "true",
-                                              "narrow": json.dumps([{"operator": "stream", "operand": stream}])})
         msgs = []
-        for m in r.get("messages", []):
-            content = m.get("content", "")
-            content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content, flags=re.S | re.I)
-            content = re.sub(r'(href|src)="/', r'\1="' + site + "/", content)
-            content = re.sub(r'<img[^>]+src="([^"]+)"[^>]*>', r'<a href="\1" target="_blank" rel="noopener">[image]</a>', content)
-            links = [html.unescape(h) for h in re.findall(r'href="([^"]+)"', content)]
-            msgs.append({"id": m.get("id"), "who": m.get("sender_full_name", ""), "email": m.get("sender_email", ""),
-                         "ts": m.get("timestamp"), "topic": m.get("subject", ""), "content": content,
-                         "keys": sorted({k for k in (canon_key(l) for l in links) if k}),
-                         "text": strip_html(content, 200)})
+        for st in zulip_all_streams():
+            r = zulip_request("/messages", params={"anchor": "newest", "num_before": 400, "num_after": 0, "apply_markdown": "true",
+                                                  "narrow": json.dumps([{"operator": "stream", "operand": st}])})
+            for m in r.get("messages", []):
+                content = m.get("content", "")
+                content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content, flags=re.S | re.I)
+                content = re.sub(r'(href|src)="/', r'\1="' + site + "/", content)
+                content = re.sub(r'<img[^>]+src="([^"]+)"[^>]*>', r'<a href="\1" target="_blank" rel="noopener">[image]</a>', content)
+                links = [html.unescape(h) for h in re.findall(r'href="([^"]+)"', content)]
+                msgs.append({"id": m.get("id"), "who": m.get("sender_full_name", ""), "email": m.get("sender_email", ""),
+                             "ts": m.get("timestamp"), "topic": m.get("subject", ""), "stream": m.get("display_recipient") or st,
+                             "content": content, "keys": sorted({k for k in (canon_key(l) for l in links) if k}),
+                             "text": strip_html(content, 200)})
         with LOCK:
             STATE["zulip"] = {"at": time.time(), "messages": msgs, "stream": stream, "site": site, "error": None}
         return STATE["zulip"]
@@ -2280,7 +2330,8 @@ def zulip_topics():
     z = STATE.get("zulip") or {}
     topics = {}
     for m in z.get("messages", []):
-        t = topics.setdefault(m["topic"], {"topic": m["topic"], "count": 0, "first_ts": m["ts"], "last_ts": m["ts"], "people": [], "keys": [], "last": ""})
+        st = m.get("stream") or z.get("stream", "")
+        t = topics.setdefault((st, m["topic"]), {"topic": m["topic"], "stream": st, "count": 0, "first_ts": m["ts"], "last_ts": m["ts"], "people": [], "keys": [], "last": ""})
         t["count"] += 1
         t["first_ts"] = min(t["first_ts"], m["ts"])
         if m["ts"] >= t["last_ts"]:
@@ -2301,21 +2352,23 @@ def discussions_index():
         out.setdefault("title:" + t["topic"].lower(), t)
     return out
 
-def zulip_topic_messages(topic):
+def zulip_topic_messages(topic, stream=""):
     z = STATE.get("zulip") or {}
-    return sorted([m for m in z.get("messages", []) if m["topic"] == topic], key=lambda m: m["ts"])
+    return sorted([m for m in z.get("messages", []) if m["topic"] == topic and (not stream or (m.get("stream") or z.get("stream")) == stream)],
+                  key=lambda m: m["ts"])
 
-def zulip_reply(topic, content):
+def zulip_reply(topic, content, stream=""):
     if not content.strip():
         raise RuntimeError("nothing to post")
-    _, _, _, stream = zulip_cfg()
+    stream = (stream or "").strip() or zulip_cfg()[3]
     r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic[:60], "content": content.strip()})
     zulip_fetch_stream()  # synchronous, so the page can show the thread with the new message right away
     return {"ok": True, "id": r.get("id")}
 
-def zulip_share(item, note="", topic=""):
-    """Post an item and your note to the configured stream. The message is plain Zulip markdown, so
-    LaTeX in the note renders there, and the topic defaults to the item's title."""
+def zulip_share(item, note="", topic="", stream=""):
+    """Post an item and your note to the stream for its kind (videos to #vids, papers to #papers, as configured),
+    or to the stream given. The message is plain Zulip markdown, so LaTeX in the note renders there, and the
+    topic defaults to the item's title."""
     k = item.get("kind", "")
     title = (item.get("title") or item.get("id") or "").strip()
     label = {"yt": "video", "tw": "tweet", "rss": "post", "arxiv": "paper"}.get(k, "link")
@@ -2333,7 +2386,7 @@ def zulip_share(item, note="", topic=""):
     if note.strip():
         lines += ["", note.strip()]
     topic = (topic.strip() or title or label)[:60]
-    _, _, _, stream = zulip_cfg()
+    stream = (stream or "").strip() or zulip_stream_for(k)
     r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic, "content": "\n".join(lines)})
     threading.Thread(target=zulip_fetch_stream, daemon=True).start()
     return {"ok": True, "id": r.get("id"), "stream": stream, "topic": topic}
@@ -2379,6 +2432,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(items_payload())
             if p.path == "/api/subs":
                 return self._send(subs_payload())
+            if p.path == "/api/unfollowed":
+                return self._send(unfollowed_list())
             if p.path == "/api/sync":
                 return self._send(sync_payload())
             if p.path == "/api/inbox":
@@ -2395,7 +2450,7 @@ class Handler(BaseHTTPRequestHandler):
                 z = STATE.get("zulip") or {}
                 return self._send({"topics": topics[:100], "at": z.get("at"), "error": z.get("error"), "on": zulip_ready()})
             if p.path == "/api/zulip/topic":
-                return self._send(zulip_topic_messages(q.get("name", [""])[0]))
+                return self._send(zulip_topic_messages(q.get("name", [""])[0], q.get("stream", [""])[0]))
             if p.path == "/api/source":
                 return self._send(source_payload(q.get("kind", [""])[0], q.get("id", [""])[0]))
             if p.path == "/open":  # the link handler and bookmarks land here: take the link, show the inbox
@@ -2487,7 +2542,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/zulip/test":
                 return self._send(zulip_test())
             if p.path == "/api/zulip/reply":
-                return self._send(zulip_reply(str(body.get("topic", "")), str(body.get("content", ""))))
+                return self._send(zulip_reply(str(body.get("topic", "")), str(body.get("content", "")), str(body.get("stream", ""))))
             if p.path == "/api/zulip/refresh":
                 return self._send({"ok": zulip_fetch_stream() is not None})
             if p.path == "/api/inbox":
@@ -2501,7 +2556,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/share":
                 if not isinstance(body.get("item"), dict):
                     return self._send({"error": "nothing to share"}, code=400)
-                return self._send(zulip_share(body["item"], str(body.get("note", "")), str(body.get("topic", ""))))
+                return self._send(zulip_share(body["item"], str(body.get("note", "")), str(body.get("topic", "")), str(body.get("stream", ""))))
             if p.path == "/api/subs/add":
                 kind, ref = parse_ref(str(body.get("ref", "")), body.get("kind", "yt"))
                 if not ref:
@@ -2512,13 +2567,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(r)
             if p.path == "/api/subs/remove":
                 return self._send({"ok": remove_sub(body.get("kind"), body.get("id"))})
+            if p.path == "/api/unfollowed/forget":
+                unfollowed_remove(body.get("kind", ""), body.get("ref", ""))
+                return self._send({"ok": True})
             if p.path == "/api/subs/update":
                 return self._send({"ok": update_sub(body.get("kind"), body.get("id"), body.get("patch") or {})})
             if p.path == "/api/import":
                 entries, bad = parse_import(body.get("text", ""), body.get("filename", ""), body.get("kind", "yt"))
                 if not entries:
                     return self._send({"error": "nothing recognisable in that", "bad": bad[:20]}, code=400)
-                r = add_entries(entries)
+                r = add_entries(entries, respect_unfollowed=True)
                 r["bad"] = bad[:20]
                 r["found"] = len(entries)
                 return self._send(r)
@@ -2540,7 +2598,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"ok": True})
             if p.path == "/api/import/browser":
                 chans = import_from_browser(body.get("browser", "firefox"))
-                r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans])
+                r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans], respect_unfollowed=True)
                 r["found"] = len(chans)
                 return self._send(r)
             self._send({"error": "bad request"}, code=400)

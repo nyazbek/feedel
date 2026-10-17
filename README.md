@@ -29,7 +29,7 @@ The papers view has its own toolbar: **latest** shows the newest listing you hav
 
 The *following* tab. Type a channel name and it searches YouTube channels; paste a `youtube.com` or `x.com` link, an `@handle` or a channel id and it is added directly. For Substack / RSS paste the site or feed link. For arXiv type a category, `au:Name Surname`, or keywords.
 
-Importing: Google Takeout `subscriptions.csv` (Takeout → deselect all → *YouTube and YouTube Music* → *all YouTube data included* → keep only *subscriptions*), OPML files from any reader, the X archive's `data/following.js`, or a pasted list with one entry per line. A line can be a link, a handle, a channel id, or a channel **name as it appears on YouTube** (`Andrew Steele`), which is matched through channel search; the import report says what each name matched and flags it when several small channels share the name. Imports never unfollow anything.
+Importing: Google Takeout `subscriptions.csv` (Takeout → deselect all → *YouTube and YouTube Music* → *all YouTube data included* → keep only *subscriptions*), OPML files from any reader, the X archive's `data/following.js`, or a pasted list with one entry per line. A line can be a link, a handle, a channel id, or a channel **name as it appears on YouTube** (`Andrew Steele`), which is matched through channel search; the import report says what each name matched and flags it when several small channels share the name. Imports never unfollow anything. **An unfollow is remembered**: syncs and imports leave previously unfollowed sources alone and say so in their report; the *previously unfollowed* list at the bottom of the following tab lets you follow one again or forget it so a later import may add it. Following something by hand always works and clears the memory.
 
 Per source: **tags** (become filter chips), **mute**, a per-channel **min** length, and a **why** note.
 
@@ -79,7 +79,7 @@ With Zulip set up (below), quietfeed reads the `#quietfeed` stream back too. Und
 
 The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). Every item also has **copy link** for sending it to a friend any other way. **share** opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.
 
-Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `quietfeed`; create it in Zulip first). *Test connection* confirms it. The key is stored in your `quietfeed.db` and never shown back on the page.
+Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `quietfeed`; create it in Zulip first). *Test connection* confirms it. Below that, each kind can go to its own stream, videos to `#vids`, papers to `#papers` and so on; the share box shows the target and lets you pick another. quietfeed reads every stream named there, so discussions are found wherever they live. The key is stored in your `quietfeed.db` and never shown back on the page.
 
 ## Library
 
