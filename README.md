@@ -18,8 +18,8 @@ First run creates `quietfeed.db` next to the program and opens the page. Standar
 
 ## What is in the feed
 
-- **videos** from YouTube channels, with a minimum length, played in mpv. Shorts are never shown, anywhere, and a Shorts link pasted into the inbox is refused; there is no setting for it on purpose.
-- **tweets** from X accounts, text only, through a Nitter mirror (see the caveat at the end).
+- **videos** from YouTube channels, with a minimum length, played in mpv. Shorts are hidden from the feed by default (the fight is against scrolling, not against a video you chose), and a Short you open yourself through the inbox still shows.
+- **tweets** from X accounts through a Nitter mirror (see the caveat at the end). A post with a video shows it with play and download: you chose to follow that person, so their videos are pre-approved. Media comes from X's public syndication endpoint, no login.
 - **posts** from Substack and any RSS/Atom feed; open in the browser.
 - **papers** from arXiv: categories (`math.PR`, `cs.LG`, or `math` for a whole archive), authors, or keyword watches. In the *all* view, papers fold into one line per day ("12 new papers") so they never drown the rest; the *papers* chip opens them properly.
 
@@ -65,11 +65,19 @@ A link someone sends you on WhatsApp, in mail or anywhere else can be opened in 
 - **Clipboard watcher** (settings): with it on, every link you *copy* that quietfeed can show lands in the inbox by itself. Copy a link in WhatsApp, switch to quietfeed, it is there. A second checkbox widens it from YouTube, X and arXiv links to every link. Only the clipboard text is read, only links are looked at, and nothing leaves the machine except the fetch of that link's own page.
 - **Make quietfeed the link handler** (Windows): run `quietfeed --register-handler` (or `python quietfeed.py --register-handler`), then pick *quietfeed* under *Settings → Apps → Default apps → Web browser*. From then on a click on any link in any app goes through quietfeed: videos, posts and papers open in the inbox, everything else is handed to your normal browser: whatever your default was when you registered (quietfeed remembers it, since afterwards the default is quietfeed itself), shown and changeable under the gear as *send the links it cannot show to*. `--unregister-handler` undoes it. `quietfeed --open URL` is the same thing from a terminal.
 
-Tweets are read through X's public embed endpoint, which needs no login and works for public posts. A post that carries a video gets a thumbnail, play and download in the inbox (through yt-dlp, no login), and only there: the feed stays text.
+Tweets are read through X's public syndication endpoint, which needs no login and works for public posts, videos included.
+
+## Source pages
+
+Click any author's name in the feed, the inbox or the following list and you land on that source's page: avatar, handle, the **follow** or **unfollow** button, **mute**, and its tags, minimum length and "why" note, followed by its recent uploads or posts. A source you do not follow yet (a channel from an inbox link, an account a friend mentioned) is fetched on the spot so you can look before following.
+
+## Discussions, through Zulip
+
+With Zulip set up (below), quietfeed reads the `#quietfeed` stream back too. Under any item that a topic in the stream links to, a quiet line says who is talking about it and when; *open discussion* unfolds the thread right there, LaTeX rendered, with a reply box that posts as you. The **talk** chip lists every topic in the stream newest first, with the item it is about when quietfeed can tell. This is the shared view: what your friends found and said, without quietfeed becoming a second chat.
 
 ## Sharing to Zulip
 
-The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). **share** on any item opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.
+The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). Every item also has **copy link** for sending it to a friend any other way. **share** opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.
 
 Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `quietfeed`; create it in Zulip first). *Test connection* confirms it. The key is stored in your `quietfeed.db` and never shown back on the page.
 
@@ -79,7 +87,7 @@ Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e
 
 ## Settings (the gear)
 
-Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, minimum video length, a per-source cap so one prolific channel cannot drown the rest, and block words (`/regex/` allowed). The theme button cycles auto / light / dark.
+Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, hide Shorts from the feed, minimum video length, a per-source cap so one prolific channel cannot drown the rest, and block words (`/regex/` allowed). The theme button cycles auto / light / dark.
 
 ## Building the executable
 

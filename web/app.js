@@ -35,7 +35,7 @@ function dayLabel(ts) {
   if (diff < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'long' }) + (d.getFullYear() !== now.getFullYear() ? ' ' + d.getFullYear() : '');
 }
-function dur(s) { if (s == null) return ''; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} h ${m} min` : `${m} min`; }
+function dur(s) { if (s == null) return ''; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} h ${m} min` : m ? `${m} min` : `${Math.round(s)} s`; }
 function dateStr(ts) { return new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }); }
 
 function calm(title) {
@@ -88,11 +88,76 @@ function migrateLocalSeen() {
 
 function render() {
   document.querySelectorAll('.views button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  ['feed', 'library', 'following'].forEach(v => $('#view-' + v).hidden = v !== view);
+  ['feed', 'library', 'following', 'source'].forEach(v => $('#view-' + v).hidden = v !== view);
   if (!data) return;
   if (view === 'feed') renderFeed();
   else if (view === 'library') renderLibrary();
+  else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
+}
+
+/* ------------------------------------------------------------ discussions (Zulip as the backend) */
+
+let talk = null;
+async function renderTalk() {
+  const L = $('#list');
+  if (!talk) { L.innerHTML = '<div class="empty">reading the stream…</div>'; try { talk = await api('/api/zulip/topics'); } catch (e) { L.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; } }
+  if (talk.error) $('#errs').innerHTML = `<div class="err">Zulip: ${esc(talk.error)}</div>`;
+  if (!talk.topics.length) { L.innerHTML = `<div class="empty">nothing in #${esc(data.zulip.stream)} yet. “share” on any item starts a topic there.</div>`; return; }
+  L.innerHTML = talk.topics.map(t => `<div class="topic" data-topic="${esc(t.topic)}">
+    <p class="t">${esc(t.topic)}</p>
+    <div class="meta">${esc(t.people.join(', '))} · ${t.count} message${t.count > 1 ? 's' : ''} · last ${ago(t.last_ts)} ago</div>
+    <div class="last">${esc(t.last_who || '')}: ${esc(t.last)}</div>
+    ${t.item ? article(t.item).replace(/<div class="disc">[\s\S]*?<\/div>/, '') : ''}
+    <div class="acts"><button data-a="disc" data-topic="${esc(t.topic)}">open discussion</button><a class="faint" href="${zulipTopicUrl(t.topic)}" target="_blank" rel="noopener">in Zulip ↗</a></div></div>`).join('');
+}
+
+async function openThread(host, topic) {
+  const old = host.querySelector(':scope > .thread, :scope > div > .thread');
+  if (old) { old.remove(); return; }
+  const box = document.createElement('div'); box.className = 'thread'; box.innerHTML = '<span class="meta">loading…</span>';
+  (host.querySelector('.acts') || host).after(box);
+  try {
+    const msgs = await api('/api/zulip/topic?name=' + encodeURIComponent(topic));
+    box.innerHTML = msgs.map(m => `<div class="msg"><div class="who"><b>${esc(m.who)}</b> · ${ago(m.ts)} ago</div><div class="zc">${m.content}</div></div>`).join('')
+      + `<textarea rows="2" placeholder="reply — markdown and $LaTeX$ work" data-reply></textarea>
+         <div class="row"><button class="solid" data-a="reply" data-topic="${esc(topic)}">post</button><a class="meta" href="${zulipTopicUrl(topic)}" target="_blank" rel="noopener">open in Zulip ↗</a><span class="meta" data-reply-status></span></div>`;
+  } catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+}
+
+async function sendReply(box, topic) {
+  const ta = box.querySelector('[data-reply]'), st = box.querySelector('[data-reply-status]');
+  if (!ta.value.trim()) return;
+  st.textContent = 'posting…';
+  try { await api('/api/zulip/reply', { topic, content: ta.value }); ta.value = ''; st.textContent = 'posted'; setTimeout(async () => { box.remove(); talk = null; await load(); const host = document.querySelector(`[data-topic="${CSS.escape(topic)}"]`)?.closest('article, .topic'); if (host) openThread(host, topic); }, 1500); }
+  catch (e) { st.textContent = e.message; }
+}
+
+/* ------------------------------------------------------------ source pages */
+
+let src = null;
+async function openSource(kind, id) {
+  view = 'source'; src = null; render();
+  $('#srchead').innerHTML = '<span class="meta">fetching…</span>'; $('#srclist').innerHTML = ''; $('#srcmeta').textContent = '';
+  location.hash = 'source/' + kind + '/' + encodeURIComponent(id);
+  try { src = await api('/api/source?' + new URLSearchParams({ kind, id })); renderSource(); }
+  catch (e) { $('#srchead').innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+}
+function renderSource() {
+  const s = src.sub, f = src.followed, k = s.kind;
+  const av = s.avatar ? `<img class="av" src="/img?u=${encodeURIComponent(s.avatar)}" alt="">` : `<div class="av"></div>`;
+  const handle = k === 'tw' ? '@' + s.id : k === 'rss' ? (s.site || '').replace(/^https?:\/\//, '') : k === 'arxiv' ? (s.qtype || '') : (s.handle || '');
+  const fields = f ? `<div class="fields">
+      <label>tags <input class="tags" data-k="tags" value="${esc((s.tags || []).join(', '))}" placeholder="math, cooking"></label>
+      ${k === 'yt' ? `<label>min <input class="mm" data-k="min_minutes" type="number" min="0" value="${s.min_minutes ?? ''}" placeholder="–"> min</label>` : ''}
+      <label>why <input class="note" data-k="note" value="${esc(s.note || '')}" placeholder="why do I follow this?"></label></div>` : '';
+  $('#srchead').innerHTML = `<div class="srchead person" data-kind="${k}" data-id="${esc(s.id)}">${av}<div>
+    <h2>${esc(s.name || handle)} <span class="meta">${esc(handle)} · ${KIND_LABEL[k]}</span></h2>
+    ${s.error ? `<div class="warn">last fetch failed: ${esc(s.error)}</div>` : ''}
+    <div class="row">${f ? `<button class="link" data-a="mute">${s.muted ? 'unmute' : 'mute'}</button><button class="link" data-a="unfollow">unfollow</button>` : `<button class="solid" data-a="src-follow">follow</button>`}
+      ${s.muted ? '<span class="meta">muted: followed, but hidden from the feed</span>' : ''}</div>${fields}</div></div>`;
+  $('#srcmeta').textContent = `${src.count} item${src.count === 1 ? '' : 's'}${f ? '' : ' · not followed'}`;
+  $('#srclist').innerHTML = src.items.length ? src.items.map(article).join('') : '<div class="empty">nothing fetched yet</div>';
 }
 
 function kindChips(active, counts, extraTags, activeTag, prefix) {
@@ -106,7 +171,9 @@ function renderFeed() {
   const s = data.settings;
   $('#when').textContent = data.refreshing ? 'refreshing…' : data.last_refresh ? 'updated ' + ago(data.last_refresh) + ' ago' : 'loading…';
   const inboxChip = (data.inbox.length || kindFilter === 'inbox') ? `<button data-f="inbox" class="${kindFilter === 'inbox' ? 'on' : ''}">inbox${data.inbox.length ? ' · ' + data.inbox.length : ''}</button>` : '';
-  $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '') + inboxChip;
+  const talkChip = data.zulip && data.zulip.on ? `<button data-f="talk" class="${kindFilter === 'talk' ? 'on' : ''}">talk</button>` : '';
+  $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '') + inboxChip + talkChip;
+  if (kindFilter === 'talk') { $('#papers').hidden = true; $('#errs').innerHTML = ''; renderTalk(); return; }
   if (kindFilter === 'inbox') {
     $('#papers').hidden = true; $('#errs').innerHTML = '';
     $('#list').innerHTML = data.inbox.length ? data.inbox.map(i => article(i).replace('</article>', inboxRow(i) + '</article>')).join('')
@@ -157,7 +224,8 @@ function inboxRow(i) {
     follow = already ? `<span class="meta">following ${esc(f.name || f.ref)}</span>`
       : `<button data-a="inbox-follow">follow ${esc(f.name || f.ref)}${f.kind === 'rss' ? ' (feed)' : f.kind === 'arxiv' ? ' (author)' : ''}</button>`;
   }
-  return `<div class="acts inboxacts"><span class="meta">via ${esc(i.via || 'link')} · ${ago(i.added)} ago</span>${follow}<button data-a="inbox-remove" class="faint">remove</button></div>`;
+  const more = f && f.ref && f.kind !== 'arxiv' ? `<button class="faint" data-src="${esc(f.kind)}|${esc(f.ref)}">more from ${esc(f.name || f.ref)}</button>` : '';
+  return `<div class="acts inboxacts"><span class="meta">via ${esc(i.via || 'link')} · ${ago(i.added)} ago</span>${follow}${more}<button data-a="inbox-remove" class="faint">remove</button></div>`;
 }
 
 function digest(papers) {
@@ -167,35 +235,51 @@ function digest(papers) {
     <div class="desc">${top}</div><div class="acts"><button data-a="papers">open papers</button></div></div></article>`;
 }
 
+function srcBtn(i) {
+  // the author's name opens the source page: for feed items via the source, for inbox items via the follow suggestion
+  const k = i.kind, id = (i.cid && i.cid !== 'inbox') ? i.cid : (i.follow && i.follow.kind === k ? i.follow.ref : null);
+  const name = i.author || (i.follow && i.follow.name) || '';
+  return id && k !== 'arxiv' ? `<button class="src" data-src="${esc(k)}|${esc(id)}">${esc(name)}</button>` : esc(name);
+}
+function discLine(i) {
+  const d = data.discussions && data.discussions[i.id];
+  if (!d) return '';
+  return `<div class="disc">${esc(d.people.slice(0, 3).join(', '))}${d.people.length > 3 ? ' and others' : ''} talk about this · ${d.count} message${d.count > 1 ? 's' : ''} · last ${ago(d.last_ts)} ago · <button data-a="disc" data-topic="${esc(d.topic)}">open discussion</button></div>`;
+}
+function zulipTopicUrl(topic) {
+  const z = data.zulip || {}, enc = s => encodeURIComponent(s).replace(/%/g, '.');
+  return `${z.site}/#narrow/stream/${enc(z.stream)}/topic/${enc(topic)}`;
+}
+
 function article(i) {
   const sn = seen.has(i.id), sv = saved.has(i.id);
   const tags = (i.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
-  const saveBtn = `<button data-a="save">${sv ? 'unsave' : 'save'}</button><button data-a="share">share</button>`;
+  const saveBtn = `<button data-a="save">${sv ? 'unsave' : 'save'}</button><button data-a="copy" class="faint">copy link</button><button data-a="share">share</button>`;
   const seenBtn = `<button data-a="seen" class="faint">${sn ? 'unmark' : 'mark seen'}</button>`;
   const cls = `${i.kind}${sn ? ' seen' : ''}`;
   if (i.kind === 'yt') {
     const nothumb = data.settings.hide_thumbnails;
     return `<article class="${cls}${nothumb ? ' nothumb' : ''}" data-id="${esc(i.id)}">${nothumb ? '' : `<img loading="lazy" src="/thumb/${esc(i.id)}" alt="">`}
       <div><p class="t">${esc(calm(i.title))}</p>
-      <div class="by">${esc(i.author)} · ${i.dur != null ? dur(i.dur) + ' · ' : ''}${ago(i.ts)} ago${tags}</div>
-      <div class="acts"><button data-a="play">▶ play</button><button data-a="dl">↓ download</button>${saveBtn}${seenBtn}</div></div></article>`;
+      <div class="by">${srcBtn(i)} · ${i.dur != null ? dur(i.dur) + ' · ' : ''}${ago(i.ts)} ago${i.short ? ' · short' : ''}${tags}</div>
+      <div class="acts"><button data-a="play">▶ play</button><button data-a="dl">↓ download</button>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'tw') {
-    // a video in a post is shown only for inbox items (things you chose to open), never in the feed
-    const vid = i.video && i.cid === 'inbox';
+    // a video in a post from someone you follow, or in a post you opened yourself, is pre-approved: show it
+    const vid = !!i.video;
     const thumb = vid && i.thumb && !data.settings.hide_thumbnails ? `<img loading="lazy" src="/img?u=${encodeURIComponent(i.thumb)}" alt="">` : '';
     const playBtns = vid ? `<button data-a="playurl">▶ play${i.dur ? ' · ' + dur(i.dur) : ''}</button><button data-a="dlurl">↓ download</button>` : '';
     return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
-      <div class="by">${esc(i.author)} · ${ago(i.ts)} ago${tags}</div>
+      <div class="by">${srcBtn(i)} · ${ago(i.ts)} ago${tags}</div>
       <div class="tweet">${esc(i.title)}</div>
-      <div class="acts">${playBtns}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div></div></article>`;
+      <div class="acts">${playBtns}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'rss') {
     return `<article class="${cls}" data-id="${esc(i.id)}"><div>
       <p class="t"><a href="${esc(i.link)}" target="_blank" rel="noopener">${esc(i.title)}</a></p>
-      <div class="by">${esc(i.author)}${i.by && i.by !== i.author ? ' · ' + esc(i.by) : ''} · ${ago(i.ts)} ago${tags}</div>
+      <div class="by">${srcBtn(i)}${i.by && i.by !== i.author ? ' · ' + esc(i.by) : ''} · ${ago(i.ts)} ago${tags}</div>
       ${i.desc ? `<div class="desc">${esc(i.desc)}</div>` : ''}
-      <div class="acts"><a href="${esc(i.link)}" target="_blank" rel="noopener">open ↗</a>${saveBtn}${seenBtn}</div></div></article>`;
+      <div class="acts"><a href="${esc(i.link)}" target="_blank" rel="noopener">open ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'follow') {
     return `<article class="rss" data-id="${esc(i.id)}"><div>
@@ -211,7 +295,7 @@ function article(i) {
       <div class="by">${dateStr(i.ts)}${i.updated && i.updated - i.ts > 86400 ? ' · updated ' + dateStr(i.updated) : ''}${cats}${tags}${i.comment ? ` · <span class="cats">${esc(i.comment)}</span>` : ''}</div>
       <div class="abs" hidden>${esc(i.desc)}</div>
       <div class="menu" hidden></div>
-      <div class="acts"><button data-a="abs">abstract</button><a href="${esc(i.link)}" target="_blank" rel="noopener">abs ↗</a><a href="${esc(i.pdf)}" target="_blank" rel="noopener">pdf ↗</a><button data-a="copy" class="faint">copy link</button>${saveBtn}${seenBtn}</div></div></article>`;
+      <div class="acts"><button data-a="abs">abstract</button><a href="${esc(i.link)}" target="_blank" rel="noopener">abs ↗</a><a href="${esc(i.pdf)}" target="_blank" rel="noopener">pdf ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   return '';
 }
@@ -229,6 +313,7 @@ async function setMark(id, field, on) {
 
 /* ------------------------------------------------------------ share to Zulip */
 
+function itemLink(i) { return i.kind === 'yt' ? 'https://www.youtube.com/watch?v=' + i.id : (i.link || i.id); }
 function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || (data.inbox || []).find(i => i.id === id) || savedItems[id]; }
 function snapshot(item) { return Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k))); }
 
@@ -303,7 +388,7 @@ function queueLibUpdate(id, patch) {
 
 function fillSettings() {
   const s = data.settings;
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'watch_clipboard', 'clipboard_any']) $('#s_' + k).checked = !!s[k];
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) $('#s_' + k).checked = !!s[k];
   $('#s_min_minutes').value = s.min_minutes ?? 0;
   $('#s_max_per_channel').value = s.max_per_channel ?? 0;
   $('#s_block_words').value = (s.block_words || []).join('\n');
@@ -322,7 +407,7 @@ async function testZulip() {
 }
 async function saveSettings(keepOpen) {
   const patch = {};
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'watch_clipboard', 'clipboard_any']) patch[k] = $('#s_' + k).checked;
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) patch[k] = $('#s_' + k).checked;
   patch.min_minutes = +$('#s_min_minutes').value || 0;
   patch.max_per_channel = +$('#s_max_per_channel').value || 0;
   patch.block_words = $('#s_block_words').value;
@@ -354,7 +439,7 @@ function personRow(s) {
     : `<div class="av">${{ tw: '𝕏', rss: 'rss', arxiv: 'arXiv' }[s.kind] || 'yt'}</div>`;
   const handle = s.kind === 'tw' ? '@' + s.id : s.kind === 'rss' ? (s.site || '').replace(/^https?:\/\//, '') : s.kind === 'arxiv' ? ({ category: 'category', author: 'author', search: 'keywords' }[s.qtype] || '') : (s.handle || '');
   return `<div class="person${s.muted ? ' muted' : ''}" data-kind="${s.kind}" data-id="${esc(s.id)}">${av}
-    <div><div class="nm">${esc(s.name || handle || s.id)}<span class="h">${esc(handle)}</span></div>
+    <div><div class="nm"><button class="src" data-src="${esc(s.kind)}|${esc(s.id)}">${esc(s.name || handle || s.id)}</button><span class="h">${esc(handle)}</span></div>
     ${s.error ? `<div class="warn">last fetch failed: ${esc(s.error)}</div>` : ''}
     <div class="fields">
       <label>tags <input class="tags" data-k="tags" value="${esc((s.tags || []).join(', '))}" placeholder="math, cooking"></label>
@@ -497,8 +582,13 @@ async function importFiles(files) {
 document.addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.v) { view = b.dataset.v; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
-  if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; render(); return; }
+  if (b.dataset.v) { view = b.dataset.v; location.hash = view === 'feed' ? '' : view; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
+  if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
+  if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
+  if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; if (kindFilter === 'talk') talk = null; render(); return; }
+  if (b.dataset.a === 'disc') { openThread(b.closest('article, .topic'), b.dataset.topic); return; }
+  if (b.dataset.a === 'reply') { sendReply(b.closest('.thread'), b.dataset.topic); return; }
+  if (b.dataset.a === 'src-follow') { const s = src.sub; b.disabled = true; b.textContent = 'adding…'; try { await followRef(s.id, s.kind, s.name); await openSource(s.kind, s.id); } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'follow'; } return; }
   if (b.dataset.tag !== undefined) { tagFilter = tagFilter === b.dataset.tag ? null : b.dataset.tag; render(); return; }
   if (b.dataset.libf) { libKind = b.dataset.libf; render(); return; }
   if (b.dataset.libtag !== undefined) { libTag = libTag === b.dataset.libtag ? null : b.dataset.libtag; render(); return; }
@@ -530,13 +620,16 @@ document.addEventListener('click', async e => {
       catch (err) { b.disabled = false; b.textContent = 'follow'; toast(err.message); }
     }
     if (b.dataset.a === 'mute') {
-      const s = subs.find(x => x.kind === kind && x.id === id); s.muted = !s.muted;
-      await api('/api/subs/update', { kind, id, patch: { muted: s.muted } }); renderSubs();
+      const s = (subs || []).find(x => x.kind === kind && x.id === id) || (src && src.sub);
+      s.muted = !s.muted;
+      await api('/api/subs/update', { kind, id, patch: { muted: s.muted } });
+      if (view === 'source') openSource(kind, id); else renderSubs();
     }
     if (b.dataset.a === 'unfollow') {
-      const s = subs.find(x => x.kind === kind && x.id === id);
+      const s = (subs || []).find(x => x.kind === kind && x.id === id) || (src && src.sub);
       if (!confirm(`unfollow ${s.name || s.id}?`)) return;
-      await api('/api/subs/remove', { kind, id }); subs = subs.filter(x => x !== s); renderSubs(); toast('unfollowed');
+      await api('/api/subs/remove', { kind, id }); if (subs) subs = subs.filter(x => x !== s); toast('unfollowed');
+      if (view === 'source') openSource(kind, id); else renderSubs();
     }
     return;
   }
@@ -556,7 +649,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'share-cancel') { art.querySelector('.share')?.remove(); return; }
   if (b.dataset.a === 'share-settings') { $('#settings').hidden = false; fillSettings(); window.scrollTo(0, 0); return; }
   if (b.dataset.a === 'abs') { const a = art.querySelector('.abs'); a.hidden = !a.hidden; b.textContent = a.hidden ? 'abstract' : 'hide abstract'; return; }
-  if (b.dataset.a === 'copy') { const it = (data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || savedItems[id]); try { await navigator.clipboard.writeText(it.link); toast('link copied'); } catch (err) { toast(it.link, 6000); } return; }
+  if (b.dataset.a === 'copy') { const it = findItem(id), link = itemLink(it); try { await navigator.clipboard.writeText(link); toast('link copied'); } catch (err) { toast(link, 6000); } return; }
   if (b.dataset.author !== undefined) {
     const a = b.dataset.author, m = art.querySelector('.menu'), mine = (data.arxiv_authors || []).some(x => x.toLowerCase() === a.toLowerCase());
     m.hidden = !m.hidden || m.dataset.author !== a; m.dataset.author = a;
@@ -569,7 +662,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'save') return setMark(id, 'saved', !saved.has(id));
   if (b.dataset.a === 'playurl' || b.dataset.a === 'dlurl') {
     const it = findItem(id);
-    try { toast(await api(b.dataset.a === 'playurl' ? '/api/play_url' : '/api/dl_url', { url: it.link })); if (b.dataset.a === 'playurl') { seen.add(id); render(); } }
+    try { toast(await api(b.dataset.a === 'playurl' ? '/api/play_url' : '/api/dl_url', { url: (b.dataset.a === 'playurl' && it.mp4) || it.link })); if (b.dataset.a === 'playurl') { seen.add(id); render(); } }
     catch (err) { toast(err.message); }
     return;
   }
@@ -617,7 +710,10 @@ let theme = null; try { theme = localStorage.getItem('theme'); } catch (e) { /* 
 applyTheme(theme);
 $('#addhint').textContent = HINTS.yt;
 if (location.hash === '#following') view = 'following';
+if (location.hash === '#library') view = 'library';
 if (location.hash === '#inbox') kindFilter = 'inbox';
+const srcHash = location.hash.match(/^#source\/(\w+)\/(.+)$/);
+if (srcHash) setTimeout(() => openSource(srcHash[1], decodeURIComponent(srcHash[2])), 0);
 load();
 if (view === 'following') { loadSubs(); loadSync(); }
-setInterval(() => { if (view === 'feed' && !axResults) load(); }, 60000);
+setInterval(() => { if (view === 'feed' && !axResults && kindFilter !== 'talk') load(); }, 60000);

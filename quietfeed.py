@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
     "youtube": {
         "channels": ["@veritasium", "@3blue1brown"],
         "min_minutes": 8,
+        "hide_shorts": True,
     },
     "twitter": {
         "users": [],
@@ -362,7 +363,7 @@ def write_marks(db, field, ids):
     db.execute("DELETE FROM marks WHERE user_id = ? AND seen_at IS NULL AND saved_at IS NULL", (USER_ID,))
 
 def load_cache():
-    cache = {"durations": {}, "shorts": {}}
+    cache = {"durations": {}, "shorts": {}, "tweets": {}}
     with LOCK:
         for r in DB.execute("SELECT kind, key, value FROM cache").fetchall():
             cache.setdefault(r["kind"], {})[r["key"]] = json.loads(r["value"])
@@ -838,11 +839,61 @@ def tw_fetch_user(sub):
                 link = re.sub(r"^https?://[^/]+", "https://x.com", it.findtext("link") or "").split("#")[0]
                 creator = it.findtext("{http://purl.org/dc/elements/1.1/}creator") or "@" + user
                 items.append({"kind": "tw", "id": link, "cid": user, "title": it.findtext("title") or "",
-                              "author": creator, "ts": ts, "desc": ""})
+                              "author": creator, "ts": ts, "desc": "", "link": link})
+            for it in items:  # videos in posts from people you follow are pre-approved: show them
+                m = re.search(r"/status/(\d+)", it["id"])
+                media = tw_syndication(m.group(1)) if m else None
+                if media:
+                    it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos") if k in media})
+                    if media.get("ts"):
+                        it["ts"] = media["ts"]
             return items
         except Exception as ex:
             last = f"{inst}: {ex}"
     raise RuntimeError(f"no Nitter instance answered (last: {last})")
+
+def tw_token(tid):
+    """The token X's public syndication endpoint expects: ((id / 1e15) * pi) in base 36, zeros and dot removed."""
+    x = (int(tid) / 1e15) * 3.141592653589793
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    n, frac, s, f = int(x), 0.0, "", ""
+    frac = x - n
+    while n:
+        s, n = digits[n % 36] + s, n // 36
+    for _ in range(12):
+        frac *= 36
+        d = int(frac)
+        f += digits[d]
+        frac -= d
+    return (s + "." + f).replace("0", "").replace(".", "")
+
+def tw_syndication(tid):
+    """One public post as JSON (no login): text, author, time, photos and the video's mp4 variants.
+    Cached forever by id since a post's media does not change; failures are not cached."""
+    cached = CACHE["tweets"].get(tid)
+    if cached is not None:
+        return cached
+    try:
+        d = json.loads(fetch(f"https://cdn.syndication.twimg.com/tweet-result?id={tid}&token={tw_token(tid)}",
+                             timeout=10, headers={"Accept": "application/json"}))
+    except Exception:
+        return None
+    if not isinstance(d, dict) or not d.get("id_str"):
+        return None
+    out = {"video": False, "text": d.get("text", ""), "name": d.get("user", {}).get("name", ""),
+           "user": (d.get("user", {}).get("screen_name") or "").lower(), "ts": iso_ts(d.get("created_at")),
+           "photos": [p.get("url") for p in d.get("photos", []) if p.get("url")][:4]}
+    for m in d.get("mediaDetails", []):
+        if m.get("type") in ("video", "animated_gif"):
+            vs = sorted([v for v in m.get("video_info", {}).get("variants", []) if v.get("content_type") == "video/mp4" and v.get("url")],
+                        key=lambda v: v.get("bitrate") or 0)
+            if vs:
+                pick = next((v for v in reversed(vs) if (v.get("bitrate") or 0) <= 2_500_000), vs[-1])  # about 720p at most
+                out.update({"video": True, "mp4": pick["url"], "thumb": m.get("media_url_https", ""),
+                            "dur": ((m.get("video_info", {}).get("duration_millis") or 0) / 1000) or None})
+                break
+    cache_put("tweets", tid, out)
+    return out
 
 def tw_resolve_id(num):
     """Numeric X user id → handle. x.com/intent/user?user_id=… redirects to the profile with no login;
@@ -1055,6 +1106,7 @@ def refresh():
     try:
         log("refreshing…")
         sync_accounts()
+        threading.Thread(target=zulip_fetch_stream, daemon=True).start()
         errors, items = [], []
         with LOCK:
             jobs = [(k, s) for k, s in all_subs() if not s.get("muted") or k == "yt"]
@@ -1128,7 +1180,7 @@ def visible_items():
             if sub is None or sub.get("muted"):
                 continue
             if it["kind"] == "yt":
-                if it.get("short"):  # Shorts are never shown; there is no setting for it on purpose
+                if yc.get("hide_shorts", True) and it.get("short"):  # the fight is against scrolling: Shorts are hidden from the feed, not banned
                     continue
                 mm = sub.get("min_minutes")
                 if mm is None:
@@ -1154,7 +1206,7 @@ def visible_items():
 
 def settings_payload():
     z = CONFIG.get("zulip") or {}
-    return {"min_minutes": CONFIG["youtube"].get("min_minutes", 0),
+    return {"hide_shorts": CONFIG["youtube"].get("hide_shorts", True), "min_minutes": CONFIG["youtube"].get("min_minutes", 0),
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
@@ -1171,10 +1223,27 @@ def items_payload():
                 "arxiv_authors": [s["name"] for s in sub_list("arxiv") if s.get("qtype") == "author"],
                 "inbox": inbox_list(),
                 "followed": {k: [s.get("id") for s in sub_list(k)] for k in KINDS},
+                "discussions": discussions_payload(),
+                "zulip": {"on": zulip_ready(), "stream": zulip_cfg()[3], "site": zulip_cfg()[0],
+                          "at": (STATE.get("zulip") or {}).get("at"), "error": (STATE.get("zulip") or {}).get("error")},
                 "settings": settings_payload()}
+
+def discussions_payload():
+    """For the page: item id → {topic, count, people, last_ts} for every item a Zulip topic is about."""
+    idx = discussions_index()
+    if not idx:
+        return {}
+    out = {}
+    for it in STATE["items"] + inbox_list() + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]:
+        t = idx.get(item_key(it) or "") or idx.get("title:" + (it.get("title") or "")[:60].lower())
+        if t and it.get("id") not in out:
+            out[it["id"]] = {k: t[k] for k in ("topic", "count", "people", "last_ts")}
+    return out
 
 def update_settings(patch):
     with LOCK:
+        if "hide_shorts" in patch:
+            CONFIG["youtube"]["hide_shorts"] = bool(patch["hide_shorts"])
         if "min_minutes" in patch:
             CONFIG["youtube"]["min_minutes"] = max(0, int(patch["min_minutes"] or 0))
         if "max_per_channel" in patch:
@@ -1633,8 +1702,8 @@ def play(video_id):
     return play_url(f"https://www.youtube.com/watch?v={video_id}")
 
 def playable_url(url):
-    """Only YouTube videos and X posts may be handed to the player."""
-    return link_kind(url) in ("yt", "tw") and url.startswith("https://")
+    """Only YouTube videos, X posts and X's own video files may be handed to the player."""
+    return url.startswith("https://") and (link_kind(url) in ("yt", "tw") or urlparse(url).netloc.endswith("video.twimg.com"))
 
 def play_url(url):
     cmd = [a.replace("{url}", url) for a in CONFIG.get("player", [])]
@@ -1716,6 +1785,45 @@ def avatar_bytes(kind, id_):
     AVATARS[key] = data
     return data
 
+# ---------------------------------------------------------------- source pages (a channel, an account, a feed, a query)
+
+def source_payload(kind, id_):
+    """Everything about one source: its record, whether you follow it, and its recent items. A source you do not
+    follow is fetched on the spot so you can look before following."""
+    if kind not in KINDS or not id_:
+        raise RuntimeError("unknown source")
+    sub = find_sub(kind, id_)
+    followed = sub is not None
+    if followed:
+        items = [it for it in STATE["items"] if it["kind"] == kind and it.get("cid") == sub["id"]]
+    else:
+        if kind == "yt":
+            info = yt_channel_info(id_)
+            sub = new_sub("yt", info["id"], info["name"], info["handle"], info["avatar"])
+            sub = find_sub("yt", info["id"]) or sub
+            followed = sub.get("added") is not None and find_sub("yt", info["id"]) is not None
+            items = [it for it in STATE["items"] if it["kind"] == "yt" and it.get("cid") == sub["id"]] if followed else fetch_channel(sub)
+        elif kind == "tw":
+            sub = new_sub("tw", id_.lstrip("@").lower())
+            items = tw_fetch_user(sub)
+            if items and items[0].get("author"):
+                sub["name"] = items[0]["author"]
+        elif kind == "rss":
+            info = rss_resolve(id_)
+            sub = find_sub("rss", info["id"]) or new_sub("rss", info["id"], info["name"], site=info["site"])
+            followed = find_sub("rss", info["id"]) is not None
+            items = [it for it in STATE["items"] if it["kind"] == "rss" and it.get("cid") == sub["id"]] if followed else fetch_rss(sub)
+        else:
+            r = arxiv_ref(id_)
+            sub = find_sub("arxiv", r["id"]) or new_sub("arxiv", r["id"], r["label"], qtype=r["type"])
+            followed = find_sub("arxiv", r["id"]) is not None
+            items = [it for it in STATE["items"] if it["kind"] == "arxiv" and it.get("cid") == sub["id"]] if followed else fetch_arxiv(sub)
+    hide_shorts = CONFIG["youtube"].get("hide_shorts", True)
+    items = [{**it, "tags": sub.get("tags", [])} for it in items if not (kind == "yt" and hide_shorts and it.get("short"))]
+    items.sort(key=lambda x: -x["ts"])
+    rec = {**{k: sub.get(k) for k in ("id", "name", "handle", "avatar", "tags", "muted", "min_minutes", "note", "added", "site", "qtype", "error")}, "kind": kind}
+    return {"sub": rec, "followed": followed, "items": items[:60], "count": len(items)}
+
 # ---------------------------------------------------------------- links from elsewhere (the inbox)
 
 URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]]+")
@@ -1754,13 +1862,11 @@ def resolve_link(url, via=""):
             vid = qs["v"][0]
         if vid and re.fullmatch(r"[\w-]{11}", vid):
             short = CACHE["shorts"].get(vid)
-            if short is None:
+            if short is None:  # a link you chose to open is never refused; this only labels it
                 code, _ = head_no_redirect(f"https://www.youtube.com/shorts/{vid}")
                 short = (code == 200) if code else "/shorts/" in url
                 if code:
                     cache_put("shorts", vid, short)
-            if short:
-                raise RuntimeError("that is a YouTube Short; quietfeed does not show Shorts")
             watch = f"https://www.youtube.com/watch?v={vid}"
             info = json.loads(fetch("https://www.youtube.com/oembed?" + urlencode({"url": watch, "format": "json"}), timeout=15))
             it = {"kind": "yt", "id": vid, "title": info.get("title", ""), "author": info.get("author_name", ""), "ts": now, "desc": "", "link": watch}
@@ -1780,7 +1886,7 @@ def resolve_link(url, via=""):
                     it["ts"] = iso_ts(m.group(1) + "T12:00:00+00:00") or now
             except Exception as ex:
                 log("  watch page", vid, ex)
-            it["short"] = False
+            it["short"] = bool(short)
             return it
         if parts and (parts[0].startswith("@") or parts[0] in ("channel", "c", "user")):
             k, ref = parse_ref(url, "yt")
@@ -1793,6 +1899,13 @@ def resolve_link(url, via=""):
         if m:
             user, sid = m.group(1), m.group(2)
             canon = f"https://x.com/{user}/status/{sid}"
+            media = tw_syndication(sid)
+            if media and media.get("text"):
+                handle = media.get("user") or user.lower()
+                it = {"kind": "tw", "id": canon, "title": media["text"], "author": "@" + handle, "ts": media.get("ts") or now, "desc": "", "link": canon,
+                      "follow": {"kind": "tw", "ref": handle, "name": media.get("name") or "@" + handle}}
+                it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos") if k in media})
+                return it
             o = json.loads(fetch("https://publish.twitter.com/oembed?" + urlencode({"url": f"https://twitter.com/{user}/status/{sid}", "omit_script": "true", "dnt": "true", "hide_thread": "true"}), timeout=15))
             h = o.get("html", "")
             pm = re.search(r"<p[^>]*>(.*?)</p>", h, re.S)
@@ -1805,10 +1918,8 @@ def resolve_link(url, via=""):
                 except Exception:
                     pass
             handle = (am.group(2) if am else user).lower()
-            it = {"kind": "tw", "id": canon, "title": text, "author": "@" + handle, "ts": ts, "desc": "", "link": canon,
-                  "follow": {"kind": "tw", "ref": handle, "name": html.unescape(am.group(1)) if am else "@" + handle}}
-            it.update(tw_video_info(canon) or {})  # a video in the post makes it playable, in the inbox only
-            return it
+            return {"kind": "tw", "id": canon, "title": text, "author": "@" + handle, "ts": ts, "desc": "", "link": canon,
+                    "follow": {"kind": "tw", "ref": handle, "name": html.unescape(am.group(1)) if am else "@" + handle}}
         if parts and re.fullmatch(r"[A-Za-z0-9_]{1,15}", parts[0]) and parts[0].lower() not in ("i", "home", "search", "explore", "settings", "intent"):
             handle = parts[0].lower()
             return {"kind": "follow", "id": url, "title": "@" + handle + " on X", "author": "", "ts": now, "link": f"https://x.com/{handle}",
@@ -2075,14 +2186,19 @@ def zulip_cfg():
         site = "https://" + site
     return site, (z.get("email") or "").strip(), (z.get("api_key") or "").strip(), (z.get("stream") or "quietfeed").strip() or "quietfeed"
 
-def zulip_request(path, data=None):
-    """One call to the Zulip REST API, authenticated as you (e-mail + personal API key)."""
+def zulip_ready():
+    site, email, key, _ = zulip_cfg()
+    return bool(site and email and key)
+
+def zulip_request(path, data=None, params=None):
+    """One call to the Zulip REST API, authenticated as you (e-mail + personal API key). `data` posts, `params` gets."""
     site, email, key, _ = zulip_cfg()
     if not (site and email and key):
         raise RuntimeError("Zulip is not set up yet: add your site, e-mail and API key under settings")
     auth = base64.b64encode(f"{email}:{key}".encode()).decode()
     try:
-        r = fetch(site + "/api/v1" + path, timeout=20, data=urlencode(data).encode() if data else None,
+        r = fetch(site + "/api/v1" + path + ("?" + urlencode(params) if params else ""), timeout=25,
+                  data=urlencode(data).encode() if data else None,
                   headers={"Authorization": "Basic " + auth, "Content-Type": "application/x-www-form-urlencoded"})
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", "ignore")
@@ -2102,6 +2218,95 @@ def item_link(it):
     if k == "yt":
         return f"https://www.youtube.com/watch?v={it.get('id')}"
     return it.get("link") or it.get("id") or ""
+
+def canon_key(url):
+    """What makes two links 'the same thing': video id, paper id, post id, or the link without its query noise."""
+    k = link_kind(url or "")
+    if k == "yt":
+        m = re.search(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})", url)
+        return "yt:" + m.group(1) if m else None
+    if k == "arxiv":
+        m = re.search(r"(\d{4}\.\d{4,5}|[a-z\-]+/\d{7})", url)
+        return "arxiv:" + m.group(1) if m else None
+    if k == "tw":
+        m = re.search(r"/status(?:es)?/(\d+)", url)
+        return "tw:" + m.group(1) if m else None
+    if k == "page":
+        return "url:" + re.sub(r"[?#].*$", "", url).rstrip("/").lower()
+    return None
+
+def item_key(it):
+    if it.get("kind") == "arxiv":
+        return "arxiv:" + str(it.get("id"))
+    return canon_key(item_link(it))
+
+def zulip_fetch_stream():
+    """The configured stream's recent messages, rendered by Zulip (so LaTeX arrives as KaTeX markup), kept in STATE."""
+    if not zulip_ready():
+        STATE["zulip"] = None
+        return None
+    site, _, _, stream = zulip_cfg()
+    try:
+        r = zulip_request("/messages", params={"anchor": "newest", "num_before": 400, "num_after": 0, "apply_markdown": "true",
+                                              "narrow": json.dumps([{"operator": "stream", "operand": stream}])})
+        msgs = []
+        for m in r.get("messages", []):
+            content = m.get("content", "")
+            content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content, flags=re.S | re.I)
+            content = re.sub(r'(href|src)="/', r'\1="' + site + "/", content)
+            content = re.sub(r'<img[^>]+src="([^"]+)"[^>]*>', r'<a href="\1" target="_blank" rel="noopener">[image]</a>', content)
+            links = [html.unescape(h) for h in re.findall(r'href="([^"]+)"', content)]
+            msgs.append({"id": m.get("id"), "who": m.get("sender_full_name", ""), "email": m.get("sender_email", ""),
+                         "ts": m.get("timestamp"), "topic": m.get("subject", ""), "content": content,
+                         "keys": sorted({k for k in (canon_key(l) for l in links) if k}),
+                         "text": strip_html(content, 200)})
+        with LOCK:
+            STATE["zulip"] = {"at": time.time(), "messages": msgs, "stream": stream, "site": site, "error": None}
+        return STATE["zulip"]
+    except Exception as ex:
+        with LOCK:
+            prev = STATE.get("zulip") or {}
+            STATE["zulip"] = {**prev, "error": str(ex), "at": prev.get("at") or time.time(), "messages": prev.get("messages", [])}
+        log("  zulip:", ex)
+        return STATE["zulip"]
+
+def zulip_topics():
+    """One summary per topic, newest activity first, with the keys of the items it is about."""
+    z = STATE.get("zulip") or {}
+    topics = {}
+    for m in z.get("messages", []):
+        t = topics.setdefault(m["topic"], {"topic": m["topic"], "count": 0, "first_ts": m["ts"], "last_ts": m["ts"], "people": [], "keys": [], "last": ""})
+        t["count"] += 1
+        t["first_ts"] = min(t["first_ts"], m["ts"])
+        if m["ts"] >= t["last_ts"]:
+            t["last_ts"], t["last"], t["last_who"] = m["ts"], m["text"], m["who"]
+        if m["who"] not in t["people"]:
+            t["people"].append(m["who"])
+        for k in m["keys"]:
+            if k not in t["keys"]:
+                t["keys"].append(k)
+    return sorted(topics.values(), key=lambda t: -t["last_ts"])
+
+def discussions_index():
+    """item key → the topic discussing it (the first one that linked it, plus a title match as a fallback)."""
+    out = {}
+    for t in zulip_topics():
+        for k in t["keys"]:
+            out.setdefault(k, t)
+        out.setdefault("title:" + t["topic"].lower(), t)
+    return out
+
+def zulip_topic_messages(topic):
+    z = STATE.get("zulip") or {}
+    return sorted([m for m in z.get("messages", []) if m["topic"] == topic], key=lambda m: m["ts"])
+
+def zulip_reply(topic, content):
+    if not content.strip():
+        raise RuntimeError("nothing to post")
+    _, _, _, stream = zulip_cfg()
+    r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic[:60], "content": content.strip()})
+    threading.Thread(target=zulip_fetch_stream, daemon=True).start()
+    return {"ok": True, "id": r.get("id")}
 
 def zulip_share(item, note="", topic=""):
     """Post an item and your note to the configured stream. The message is plain Zulip markdown, so
@@ -2125,6 +2330,7 @@ def zulip_share(item, note="", topic=""):
     topic = (topic.strip() or title or label)[:60]
     _, _, _, stream = zulip_cfg()
     r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic, "content": "\n".join(lines)})
+    threading.Thread(target=zulip_fetch_stream, daemon=True).start()
     return {"ok": True, "id": r.get("id"), "stream": stream, "topic": topic}
 
 # ---------------------------------------------------------------- web
@@ -2172,6 +2378,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(sync_payload())
             if p.path == "/api/inbox":
                 return self._send(inbox_list())
+            if p.path == "/api/zulip/topics":
+                topics = zulip_topics()
+                by_key = {}
+                for it in STATE["items"] + inbox_list():
+                    k = item_key(it)
+                    if k and k not in by_key:
+                        by_key[k] = it
+                for t in topics:
+                    t["item"] = next((by_key[k] for k in t["keys"] if k in by_key), None)
+                z = STATE.get("zulip") or {}
+                return self._send({"topics": topics[:100], "at": z.get("at"), "error": z.get("error"), "on": zulip_ready()})
+            if p.path == "/api/zulip/topic":
+                return self._send(zulip_topic_messages(q.get("name", [""])[0]))
+            if p.path == "/api/source":
+                return self._send(source_payload(q.get("kind", [""])[0], q.get("id", [""])[0]))
             if p.path == "/open":  # the link handler and bookmarks land here: take the link, show the inbox
                 u = q.get("u", [""])[0].strip()
                 if u:
@@ -2260,6 +2481,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(update_settings(body))
             if p.path == "/api/zulip/test":
                 return self._send(zulip_test())
+            if p.path == "/api/zulip/reply":
+                return self._send(zulip_reply(str(body.get("topic", "")), str(body.get("content", ""))))
+            if p.path == "/api/zulip/refresh":
+                return self._send({"ok": zulip_fetch_stream() is not None})
             if p.path == "/api/inbox":
                 u = str(body.get("url", "")).strip()
                 if not link_kind(u):

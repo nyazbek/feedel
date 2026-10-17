@@ -32,6 +32,30 @@ h2{font-size:16px;margin:0 0 8px;font-weight:600;letter-spacing:.01em}
 h2.sub{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
 h2.sub .meta{font-weight:400}
 .inboxacts{margin-top:4px}
+.by button.src{color:inherit;border-bottom:1px dotted var(--faint)}
+.by button.src:hover{color:var(--fg)}
+.disc{margin-top:6px;font-size:14px;color:var(--mut)}
+.disc button{color:var(--acc)}
+.thread{margin-top:10px;padding:10px 14px;background:var(--soft);border-radius:8px}
+.thread .msg{padding:8px 0;border-bottom:1px solid var(--line)}
+.thread .msg:last-of-type{border-bottom:none}
+.thread .who{font-size:13px;color:var(--mut);margin-bottom:2px}
+.thread .who b{color:var(--fg);font-weight:600}
+.zc{font-size:15px;line-height:1.5}
+.zc p{margin:0 0 6px}
+.zc pre,.zc code{font-size:13px}
+.zc blockquote{margin:4px 0;padding-left:10px;border-left:2px solid var(--line);color:var(--mut)}
+.thread textarea{width:100%;font-size:15px;margin-top:8px}
+.thread .row{margin:6px 0 0}
+.topic{padding:14px 0;border-bottom:1px solid var(--line)}
+.topic .t{font-size:17px}
+.topic .last{color:var(--mut);font-size:15px;margin-top:2px}
+.srchead{display:grid;grid-template-columns:64px 1fr;gap:16px;align-items:start}
+.srchead .av{width:64px;height:64px;border-radius:50%;object-fit:cover;background:var(--soft)}
+.srchead h2{font-size:20px;margin:0}
+.srchead .fields{display:flex;flex-wrap:wrap;gap:8px 12px;margin-top:8px;font-size:14px;color:var(--mut)}
+.srchead .fields input{font-size:14px;padding:3px 8px}
+.srchead .fields input.tags{width:180px}.srchead .fields input.note{width:260px}.srchead .fields input.mm{width:48px}
 #linkform{margin:0 0 10px;padding-bottom:10px}
 .share{margin-top:10px;padding:10px 12px;background:var(--soft);border-radius:8px}
 .share textarea{width:100%;font-size:15px;margin-bottom:6px}

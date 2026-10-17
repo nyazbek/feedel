@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -30,6 +31,7 @@
     <label><input type="checkbox" id="s_hide_thumbnails"> hide thumbnails</label>
     <label><input type="checkbox" id="s_calm_titles"> calm titles (no SHOUTING, one “!” at most)</label>
     <label><input type="checkbox" id="s_hide_seen"> hide what I've already seen</label>
+    <label><input type="checkbox" id="s_hide_shorts"> hide Shorts from the feed (a Short you open yourself still shows)</label>
     <label>skip videos shorter than <input type="number" id="s_min_minutes" min="0" class="num"> min</label>
     <label>at most <input type="number" id="s_max_per_channel" min="0" class="num"> items per source (0 = no cap)</label>
     <label><input type="checkbox" id="s_watch_clipboard"> watch the clipboard: links I copy (WhatsApp, mail, anywhere) land in the inbox</label>
@@ -78,6 +80,12 @@
   </div>
   <div id="errs"></div>
   <div id="list"></div>
+</section>
+
+<section id="view-source" hidden>
+  <div class="bar"><button id="srcback" class="link">← back</button><span class="grow"></span><span class="meta" id="srcmeta"></span></div>
+  <div id="srchead" class="panel"></div>
+  <div id="srclist"></div>
 </section>
 
 <section id="view-library" hidden>
