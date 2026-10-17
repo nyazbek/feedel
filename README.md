@@ -57,6 +57,12 @@ If a browser on this machine is signed in to YouTube, pick it under *Browser ses
 
 X's API no longer offers free read access and scraping a logged-in session risks the account, so there is no live sync. The complete route is the archive: on x.com, *Settings → Your account → Download an archive of your data*, then drop `data/following.js` into the import box. It only holds numeric ids; they are resolved to handles through x.com's public intent redirect (no login), and whatever does not resolve on the spot is queued and retried every refresh.
 
+## Sharing to Zulip
+
+The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). **share** on any item opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.
+
+Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `quietfeed`; create it in Zulip first). *Test connection* confirms it. The key is stored in your `quietfeed.db` and never shown back on the page.
+
 ## Library
 
 *Save* on anything puts it in the library, where it stays after it has left the feed. Each saved item takes **tags** and a **note**; the library filters by kind and tag and searches titles, authors, abstracts and notes. Seen and saved state live in `quietfeed.db`.

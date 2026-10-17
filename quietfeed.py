@@ -24,7 +24,7 @@ if len(sys.argv) > 1 and any(a in ("-J", "-j", "--dump-single-json", "--dump-jso
     import yt_dlp
     sys.exit(yt_dlp.main())
 
-import csv, hashlib, html, io, json, os, re, shutil, sqlite3, subprocess, threading, time
+import base64, csv, hashlib, html, io, json, os, re, shutil, sqlite3, subprocess, threading, time
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -71,6 +71,8 @@ DEFAULT_CONFIG = {
     "ui": {"hide_thumbnails": False, "calm_titles": True, "hide_seen": False},
     # "browser": name of a browser signed in to YouTube whose subscriptions are re-read on every refresh (needs yt-dlp)
     "sync": {"browser": ""},
+    # where the conversation lives: "share" posts an item and your note to this stream, as you, with your own API key
+    "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed"},
     "player": ["mpv", "--ytdl-format=bestvideo[height<=1080]+bestaudio/best", "{url}"],
     "download_dir": os.path.join(HERE, "downloads"),
     "refresh_minutes": 30,
@@ -1121,8 +1123,11 @@ def visible_items():
         return out[: int(CONFIG.get("max_items", 400))]
 
 def settings_payload():
+    z = CONFIG.get("zulip") or {}
     return {"hide_shorts": CONFIG["youtube"].get("hide_shorts", True), "min_minutes": CONFIG["youtube"].get("min_minutes", 0),
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
+            "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
+                      "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             **CONFIG["ui"]}
 
 def items_payload():
@@ -1149,6 +1154,15 @@ def update_settings(patch):
         for k in ("hide_thumbnails", "calm_titles", "hide_seen"):
             if k in patch:
                 CONFIG["ui"][k] = bool(patch[k])
+        if isinstance(patch.get("zulip"), dict):
+            z = CONFIG.setdefault("zulip", {})
+            for k in ("site", "email", "stream"):
+                if k in patch["zulip"]:
+                    z[k] = str(patch["zulip"][k]).strip()
+            if patch["zulip"].get("api_key"):  # an empty field means "keep the one I already saved"
+                z["api_key"] = str(patch["zulip"]["api_key"]).strip()
+            if patch["zulip"].get("clear_key"):
+                z["api_key"] = ""
         save_config()
         return settings_payload()
 
@@ -1654,6 +1668,67 @@ def avatar_bytes(kind, id_):
     AVATARS[key] = data
     return data
 
+# ---------------------------------------------------------------- zulip (where the conversation lives)
+
+def zulip_cfg():
+    z = CONFIG.get("zulip") or {}
+    site = (z.get("site") or "").strip().rstrip("/")
+    if site and not site.startswith("http"):
+        site = "https://" + site
+    return site, (z.get("email") or "").strip(), (z.get("api_key") or "").strip(), (z.get("stream") or "quietfeed").strip() or "quietfeed"
+
+def zulip_request(path, data=None):
+    """One call to the Zulip REST API, authenticated as you (e-mail + personal API key)."""
+    site, email, key, _ = zulip_cfg()
+    if not (site and email and key):
+        raise RuntimeError("Zulip is not set up yet: add your site, e-mail and API key under settings")
+    auth = base64.b64encode(f"{email}:{key}".encode()).decode()
+    try:
+        r = fetch(site + "/api/v1" + path, timeout=20, data=urlencode(data).encode() if data else None,
+                  headers={"Authorization": "Basic " + auth, "Content-Type": "application/x-www-form-urlencoded"})
+    except urllib.error.HTTPError as e:
+        msg = e.read().decode("utf-8", "ignore")
+        try:
+            msg = json.loads(msg).get("msg", msg)
+        except Exception:
+            pass
+        raise RuntimeError(f"Zulip said {e.code}: {msg[:200]}")
+    return json.loads(r)
+
+def zulip_test():
+    me = zulip_request("/users/me")
+    return {"ok": True, "name": me.get("full_name", ""), "email": me.get("email", ""), "stream": zulip_cfg()[3]}
+
+def item_link(it):
+    k = it.get("kind")
+    if k == "yt":
+        return f"https://www.youtube.com/watch?v={it.get('id')}"
+    return it.get("link") or it.get("id") or ""
+
+def zulip_share(item, note="", topic=""):
+    """Post an item and your note to the configured stream. The message is plain Zulip markdown, so
+    LaTeX in the note renders there, and the topic defaults to the item's title."""
+    k = item.get("kind", "")
+    title = (item.get("title") or item.get("id") or "").strip()
+    label = {"yt": "video", "tw": "tweet", "rss": "post", "arxiv": "paper"}.get(k, "link")
+    meta = [label, item.get("author") or ""]
+    if k == "yt" and item.get("dur"):
+        meta.append(f"{int(item['dur']) // 60} min")
+    if k == "arxiv" and item.get("primary"):
+        meta.append(item["primary"])
+    lines = [f"**[{title}]({item_link(item)})**" if k != "tw" else f"**{item.get('author', '')}** on X: {item_link(item)}",
+             " · ".join(m for m in meta if m)]
+    if k == "tw":
+        lines.append("> " + title.replace("\n", "\n> "))
+    if k == "arxiv" and item.get("pdf"):
+        lines.append(f"[pdf]({item['pdf']})")
+    if note.strip():
+        lines += ["", note.strip()]
+    topic = (topic.strip() or title or label)[:60]
+    _, _, _, stream = zulip_cfg()
+    r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic, "content": "\n".join(lines)})
+    return {"ok": True, "id": r.get("id"), "stream": stream, "topic": topic}
+
 # ---------------------------------------------------------------- web
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -1677,10 +1752,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self):
         n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n) or b"{}"
         try:
-            return json.loads(self.rfile.read(n) or b"{}")
-        except Exception:
-            return {}
+            return json.loads(raw.decode("utf-8"))
+        except Exception as ex:
+            raise RuntimeError(f"request body is not valid UTF-8 JSON ({ex})")
 
     def do_GET(self):
         p = urlparse(self.path)
@@ -1763,6 +1839,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"ok": True})
             if p.path == "/api/settings":
                 return self._send(update_settings(body))
+            if p.path == "/api/zulip/test":
+                return self._send(zulip_test())
+            if p.path == "/api/share":
+                if not isinstance(body.get("item"), dict):
+                    return self._send({"error": "nothing to share"}, code=400)
+                return self._send(zulip_share(body["item"], str(body.get("note", "")), str(body.get("topic", ""))))
             if p.path == "/api/subs/add":
                 kind, ref = parse_ref(str(body.get("ref", "")), body.get("kind", "yt"))
                 if not ref:

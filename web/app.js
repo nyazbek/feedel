@@ -152,7 +152,7 @@ function digest(papers) {
 function article(i) {
   const sn = seen.has(i.id), sv = saved.has(i.id);
   const tags = (i.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
-  const saveBtn = `<button data-a="save">${sv ? 'unsave' : 'save'}</button>`;
+  const saveBtn = `<button data-a="save">${sv ? 'unsave' : 'save'}</button><button data-a="share">share</button>`;
   const seenBtn = `<button data-a="seen" class="faint">${sn ? 'unmark' : 'mark seen'}</button>`;
   const cls = `${i.kind}${sn ? ' seen' : ''}`;
   if (i.kind === 'yt') {
@@ -199,6 +199,36 @@ async function setMark(id, field, on) {
   const snap = item && Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k)));
   try { await api('/api/mark', { id, field, on, item: snap }); }
   catch (e) { toast('could not save: ' + e.message); }
+}
+
+/* ------------------------------------------------------------ share to Zulip */
+
+function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || savedItems[id]; }
+function snapshot(item) { return Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k))); }
+
+function openShare(art) {
+  const old = art.querySelector('.share'); if (old) { old.remove(); return; }
+  const it = findItem(art.dataset.id); if (!it) return;
+  const z = data.settings.zulip || {};
+  const box = document.createElement('div'); box.className = 'share';
+  if (!z.site || !z.email || !z.api_key_set) {
+    box.innerHTML = `<span class="meta">sharing goes to Zulip, and it is not set up yet — </span><button class="link" data-a="share-settings">open settings</button>`;
+  } else {
+    box.innerHTML = `<textarea rows="3" placeholder="why is this worth their time? (LaTeX works: $…$)" data-share="note"></textarea>
+      <input data-share="topic" value="${esc((it.title || '').slice(0, 60))}" placeholder="topic">
+      <div class="row"><button class="solid" data-a="share-send">post to #${esc(z.stream || 'quietfeed')}</button><button class="link" data-a="share-cancel">cancel</button><span class="meta" data-share="status"></span></div>`;
+  }
+  art.querySelector('.acts').after(box);
+  box.querySelector('textarea')?.focus();
+}
+async function sendShare(art) {
+  const box = art.querySelector('.share'), it = findItem(art.dataset.id);
+  const note = box.querySelector('[data-share=note]').value, topic = box.querySelector('[data-share=topic]').value, st = box.querySelector('[data-share=status]');
+  st.textContent = 'posting…';
+  try {
+    const r = await api('/api/share', { item: snapshot(it), note, topic });
+    box.remove(); toast(`shared to #${r.stream} › ${r.topic}`, 4000);
+  } catch (e) { st.textContent = e.message; }
 }
 
 /* ------------------------------------------------------------ arXiv search */
@@ -251,15 +281,29 @@ function fillSettings() {
   $('#s_min_minutes').value = s.min_minutes ?? 0;
   $('#s_max_per_channel').value = s.max_per_channel ?? 0;
   $('#s_block_words').value = (s.block_words || []).join('\n');
+  const z = s.zulip || {};
+  $('#z_site').value = z.site || ''; $('#z_stream').value = z.stream || 'quietfeed'; $('#z_email').value = z.email || '';
+  $('#z_key').value = ''; $('#z_key').placeholder = z.api_key_set ? 'saved — leave empty to keep it' : 'Zulip → settings → account → API key';
+  $('#z_status').textContent = '';
 }
-async function saveSettings() {
+async function testZulip() {
+  await saveSettings(true);
+  $('#z_status').textContent = 'testing…';
+  try { const r = await api('/api/zulip/test', {}); $('#z_status').textContent = `connected as ${r.name}; posting to #${r.stream}`; }
+  catch (e) { $('#z_status').textContent = e.message; }
+}
+async function saveSettings(keepOpen) {
   const patch = {};
   for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts']) patch[k] = $('#s_' + k).checked;
   patch.min_minutes = +$('#s_min_minutes').value || 0;
   patch.max_per_channel = +$('#s_max_per_channel').value || 0;
   patch.block_words = $('#s_block_words').value;
-  try { data.settings = await api('/api/settings', patch); toast('saved'); $('#settings').hidden = true; await load(); }
-  catch (e) { toast('could not save: ' + e.message); }
+  patch.zulip = { site: $('#z_site').value, stream: $('#z_stream').value, email: $('#z_email').value, api_key: $('#z_key').value };
+  try {
+    data.settings = await api('/api/settings', patch);
+    if ($('#z_key').value) { $('#z_key').value = ''; $('#z_key').placeholder = 'saved — leave empty to keep it'; }
+    if (!keepOpen) { toast('saved'); $('#settings').hidden = true; await load(); }
+  } catch (e) { toast('could not save: ' + e.message); }
 }
 
 /* ------------------------------------------------------------ following */
@@ -435,6 +479,7 @@ document.addEventListener('click', async e => {
   if (b.id === 'rf') { toast('refreshing…'); await api('/api/refresh', {}); setTimeout(load, 4000); return; }
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
+  if (b.id === 'z_test') { testZulip(); return; }
   if (b.id === 'quit') { if (confirm('stop quietfeed? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">quietfeed stopped. start it again to continue.</p></main>'; } return; }
   if (b.id === 'importbtn') { const t = $('#paste').value.trim(); if (t) { importText(t, ''); $('#paste').value = ''; } return; }
   if (b.id === 'gconnect') { connectGoogle(); return; }
@@ -469,6 +514,10 @@ document.addEventListener('click', async e => {
   if (!art) return;
   const id = art.dataset.id;
   if (b.dataset.a === 'papers') { kindFilter = 'arxiv'; render(); window.scrollTo(0, 0); return; }
+  if (b.dataset.a === 'share') { openShare(art); return; }
+  if (b.dataset.a === 'share-send') { sendShare(art); return; }
+  if (b.dataset.a === 'share-cancel') { art.querySelector('.share')?.remove(); return; }
+  if (b.dataset.a === 'share-settings') { $('#settings').hidden = false; fillSettings(); window.scrollTo(0, 0); return; }
   if (b.dataset.a === 'abs') { const a = art.querySelector('.abs'); a.hidden = !a.hidden; b.textContent = a.hidden ? 'abstract' : 'hide abstract'; return; }
   if (b.dataset.a === 'copy') { const it = (data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || savedItems[id]); try { await navigator.clipboard.writeText(it.link); toast('link copied'); } catch (err) { toast(it.link, 6000); } return; }
   if (b.dataset.author !== undefined) {

@@ -36,6 +36,14 @@
   </div>
   <label class="block">hide anything whose title contains (one per line; wrap in / / for a regex)
     <textarea id="s_block_words" rows="3" placeholder="giveaway&#10;reacts to&#10;/\b(top|best) \d+\b/"></textarea></label>
+  <h2 class="sub">Zulip <span class="meta">— where the conversation lives. “share” posts an item and your note there, as you.</span></h2>
+  <div class="grid2">
+    <label>site <input id="z_site" placeholder="yourgroup.zulipchat.com"></label>
+    <label>stream <input id="z_stream" placeholder="quietfeed"></label>
+    <label>your e-mail <input id="z_email" placeholder="you@example.com"></label>
+    <label>API key <input id="z_key" type="password" placeholder="Zulip → settings → account → API key" autocomplete="off"></label>
+  </div>
+  <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
   <div class="row"><button id="s_save" class="solid">save</button><span class="meta">per-source overrides live in the following tab</span>
     <span class="grow"></span><button id="quit" class="link">quit quietfeed</button></div>
 </div>
