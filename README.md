@@ -14,7 +14,7 @@ pip install yt-dlp                     # streaming in mpv, downloads, browser-se
 python quietfeed.py
 ```
 
-First run writes `config.json` next to the program and opens the page. Standard library only. The program finds mpv and yt-dlp on its own even when they are not on your PATH, and tells mpv where yt-dlp is. `--no-open` skips opening the browser, `--port N` changes the port. Starting it twice just re-opens the page. *Settings → quit quietfeed* stops it.
+First run creates `quietfeed.db` next to the program and opens the page. Standard library only. The program finds mpv and yt-dlp on its own even when they are not on your PATH, and tells mpv where yt-dlp is. `--no-open` skips opening the browser, `--port N` changes the port. Starting it twice just re-opens the page. *Settings → quit quietfeed* stops it.
 
 ## What is in the feed
 
@@ -59,7 +59,7 @@ X's API no longer offers free read access and scraping a logged-in session risks
 
 ## Library
 
-*Save* on anything puts it in the library, where it stays after it has left the feed. Each saved item takes **tags** and a **note**; the library filters by kind and tag and searches titles, authors, abstracts and notes. Seen and saved state live in `state.json`.
+*Save* on anything puts it in the library, where it stays after it has left the feed. Each saved item takes **tags** and a **note**; the library filters by kind and tag and searches titles, authors, abstracts and notes. Seen and saved state live in `quietfeed.db`.
 
 ## Settings (the gear)
 
@@ -72,13 +72,13 @@ pip install pyinstaller yt-dlp
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name quietfeed --add-data "web;web" --collect-submodules yt_dlp quietfeed.py
 ```
 
-`dist\quietfeed.exe` is self-contained: the page, yt-dlp and everything else are inside. It writes `config.json`, `state.json`, `cache.json` and `quietfeed.log` next to itself, so put it in its own folder. It has no console window; *Settings → quit quietfeed* stops it. If no `yt-dlp.exe` is installed, mpv streams through the exe itself, which answers as yt-dlp when asked. Windows SmartScreen will warn once about an unsigned program; some antivirus products dislike single-file PyInstaller builds, in which case drop `--onefile` and ship the `dist\quietfeed` folder instead.
+`dist\quietfeed.exe` is self-contained: the page, yt-dlp and everything else are inside. It writes `quietfeed.db` and `quietfeed.log` next to itself, so put it in its own folder. It has no console window; *Settings → quit quietfeed* stops it. If no `yt-dlp.exe` is installed, mpv streams through the exe itself, which answers as yt-dlp when asked. Windows SmartScreen will warn once about an unsigned program; some antivirus products dislike single-file PyInstaller builds, in which case drop `--onefile` and ship the `dist\quietfeed` folder instead.
 
 ## Files
 
-- `config.json` — settings and everything you follow. Plain-string entries you add by hand (`"@veritasium"`, `"UC…"`, a feed URL, `"math.PR"`) are upgraded on the next run.
-- `state.json` — seen and saved items, with your tags and notes.
-- `cache.json`, `cache/avatars/` — durations, Shorts detection, avatars. Safe to delete.
+- `quietfeed.db` — one SQLite file with everything: settings, what you follow, seen and saved items with your tags and notes, the items themselves (kept 90 days after they leave their feed; saved ones forever) and the duration / Shorts cache. Back it up by copying it. `python quietfeed.py --export > backup.json` dumps it all as JSON; `python quietfeed.py --import backup.json` merges a dump (or an old `config.json` / `state.json` / `cache.json`) back in, adding and never removing. Open it with any SQLite tool to look around.
+- `config.json`, `state.json`, `cache.json` — the files older versions used. They are migrated into `quietfeed.db` the first time this version runs and renamed `*.json.migrated`.
+- `cache/avatars/` — avatar images. Safe to delete.
 - `downloads/` — what the **download** button saves.
 
 ## Twitter caveat

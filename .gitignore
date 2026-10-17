@@ -1,7 +1,8 @@
 # your own data — never commit these
-config.json
-state.json
-cache.json
+quietfeed.db*
+config.json*
+state.json*
+cache.json*
 cache/
 downloads/
 quietfeed.log

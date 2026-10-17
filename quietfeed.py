@@ -24,10 +24,11 @@ if len(sys.argv) > 1 and any(a in ("-J", "-j", "--dump-single-json", "--dump-jso
     import yt_dlp
     sys.exit(yt_dlp.main())
 
-import csv, hashlib, html, io, json, os, re, shutil, subprocess, threading, time
+import csv, hashlib, html, io, json, os, re, shutil, sqlite3, subprocess, threading, time
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -37,9 +38,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 FROZEN = getattr(sys, "frozen", False)
 HERE = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
 WEB = os.path.join(getattr(sys, "_MEIPASS", HERE), "web")
-CONFIG_PATH = os.path.join(HERE, "config.json")
-CACHE_PATH = os.path.join(HERE, "cache.json")
-STATE_PATH = os.path.join(HERE, "state.json")
+DB_PATH = os.path.join(HERE, "quietfeed.db")
+LEGACY_JSON = {k: os.path.join(HERE, k + ".json") for k in ("config", "state", "cache")}  # pre-0.3 files, migrated on first run
 LOG_PATH = os.path.join(HERE, "quietfeed.log")
 AVATAR_DIR = os.path.join(HERE, "cache", "avatars")
 PORT = 8765
@@ -76,6 +76,7 @@ DEFAULT_CONFIG = {
     "refresh_minutes": 30,
     "max_items": 400,
     "max_per_channel": 8,
+    "keep_days": 90,  # items that have dropped out of their feed are kept this long; saved items are kept forever
 }
 
 # ---------------------------------------------------------------- helpers
@@ -140,7 +141,7 @@ def log(*a):
         except Exception:
             pass
     else:
-        print(line, flush=True)
+        print(line, file=sys.stderr if "--export" in sys.argv else sys.stdout, flush=True)  # --export owns stdout
 
 def yt_initial_data(page):
     m = (re.search(r"var ytInitialData = (\{.*?\});</script>", page, re.S)
@@ -198,45 +199,321 @@ def strip_html(s, limit=400):
     s = re.sub(r"\s*\n\s*", "\n", s).strip()
     return s[:limit].rstrip() + ("…" if len(s) > limit else "")
 
+# ---------------------------------------------------------------- storage (one SQLite file next to the program)
+
+USER_ID = 1  # single-user mode: one implicit user owns every follow and mark; milestone 3 adds the rest
+SUB_LISTS = {"yt": ("youtube", "channels"), "tw": ("twitter", "users"), "rss": ("rss", "feeds"), "arxiv": ("arxiv", "queries")}
+FOLLOW_KEYS = ("tags", "muted", "min_minutes", "note", "added")  # the per-user part of a subscription record → `follows`
+SOURCE_KEYS = ("id", "name", "error", "last_fetched")           # columns of `sources`; everything else in a record → meta_json
+LOCK = threading.RLock()
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', pass_hash TEXT, invited_by INTEGER REFERENCES users(id),
+    created INTEGER NOT NULL, settings_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- 'youtube.min_minutes' → JSON value
+CREATE TABLE IF NOT EXISTS sources (  -- a channel, account, feed or arXiv query; shared by everyone who follows it
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, ref TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+    meta_json TEXT NOT NULL DEFAULT '{}', last_fetched REAL, error TEXT, UNIQUE (kind, ref));
+CREATE TABLE IF NOT EXISTS follows (
+    user_id INTEGER NOT NULL REFERENCES users(id), source_id INTEGER NOT NULL REFERENCES sources(id),
+    tags TEXT NOT NULL DEFAULT '[]', muted INTEGER NOT NULL DEFAULT 0, min_minutes INTEGER, note TEXT NOT NULL DEFAULT '',
+    added INTEGER, PRIMARY KEY (user_id, source_id));
+CREATE TABLE IF NOT EXISTS items (  -- ext_id is the id the page uses: video id, tweet link, post link, arXiv id
+    id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), kind TEXT NOT NULL, ext_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', ts REAL NOT NULL, payload_json TEXT NOT NULL,
+    fetched REAL NOT NULL, UNIQUE (source_id, ext_id));
+CREATE INDEX IF NOT EXISTS items_ts ON items (ts);
+CREATE TABLE IF NOT EXISTS marks (  -- item_id is an items.ext_id; a saved mark keeps its own snapshot so it outlives the item
+    user_id INTEGER NOT NULL REFERENCES users(id), item_id TEXT NOT NULL, seen_at INTEGER, saved_at INTEGER,
+    tags TEXT NOT NULL DEFAULT '[]', note TEXT NOT NULL DEFAULT '', snapshot_json TEXT, PRIMARY KEY (user_id, item_id));
+CREATE TABLE IF NOT EXISTS shares (
+    id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), item_id TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY, share_id INTEGER NOT NULL REFERENCES shares(id), user_id INTEGER NOT NULL REFERENCES users(id),
+    parent_id INTEGER REFERENCES comments(id), body TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS cache (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (kind, key));
+"""
+
+def open_db():
+    """Open (creating if needed) quietfeed.db in WAL mode. Returns (connection, True when it holds no settings yet)."""
+    con = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)  # transactions are explicit: see tx()
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA foreign_keys=ON")
+    con.executescript(SCHEMA)
+    con.execute("INSERT OR IGNORE INTO users (id, name, created) VALUES (?, '', ?)", (USER_ID, int(time.time())))
+    empty = con.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 0
+    return con, empty
+
+DB, NEW_DB = open_db()
+
+@contextmanager
+def tx():
+    """One write transaction, serialised with every other access by LOCK. Not re-entrant: never nest it."""
+    with LOCK:
+        DB.execute("BEGIN IMMEDIATE")
+        try:
+            yield DB
+        except BaseException:
+            DB.execute("ROLLBACK")
+            raise
+        DB.execute("COMMIT")
+
+def load_settings():
+    """settings rows → the nested CONFIG shape ('youtube.min_minutes' → CONFIG['youtube']['min_minutes'])."""
+    cfg = {}
+    with LOCK:
+        rows = DB.execute("SELECT key, value FROM settings").fetchall()
+    for r in rows:
+        v = json.loads(r["value"])
+        if "." in r["key"]:
+            sec, name = r["key"].split(".", 1)
+            cfg.setdefault(sec, {})[name] = v
+        else:
+            cfg[r["key"]] = v
+    return cfg
+
+def settings_rows(cfg):
+    """The inverse: one row per setting, sections flattened to 'section.key'. Subscription lists are not settings."""
+    lists = set(SUB_LISTS.values())
+    rows = []
+    for k, v in cfg.items():
+        if isinstance(v, dict):
+            rows += [(f"{k}.{kk}", json.dumps(vv, ensure_ascii=False)) for kk, vv in v.items() if (k, kk) not in lists]
+        else:
+            rows.append((k, json.dumps(v, ensure_ascii=False)))
+    return rows
+
+def load_subs(kind):
+    """The followed sources of one kind as the subscription records the rest of the program works with."""
+    with LOCK:
+        rows = DB.execute("""SELECT s.ref, s.name, s.meta_json, s.last_fetched, s.error, f.tags, f.muted, f.min_minutes, f.note, f.added
+                             FROM follows f JOIN sources s ON s.id = f.source_id WHERE f.user_id = ? AND s.kind = ?
+                             ORDER BY f.rowid""", (USER_ID, kind)).fetchall()  # follows are rewritten in list order
+    out = []
+    for r in rows:
+        rec = {"id": r["ref"], "name": r["name"], "handle": "", "avatar": "", "tags": json.loads(r["tags"]), "muted": bool(r["muted"]),
+               "min_minutes": r["min_minutes"], "note": r["note"], "added": r["added"]}
+        rec.update(json.loads(r["meta_json"]))  # handle, avatar, site, qtype, an unresolved ref (then id is ''), anything else
+        if r["error"]:
+            rec["error"] = r["error"]
+        if r["last_fetched"]:
+            rec["last_fetched"] = r["last_fetched"]
+        out.append(rec)
+    return out
+
+def write_config(db):
+    """Rewrite settings, sources and follows from CONFIG: a few hundred rows at most, simpler than tracking changes."""
+    db.execute("DELETE FROM settings")
+    db.executemany("INSERT INTO settings (key, value) VALUES (?, ?)", settings_rows(CONFIG))
+    sources, follows = [], []
+    for kind, s in all_subs():
+        key = s.get("id") or s.get("ref") or ""
+        meta = {k: v for k, v in s.items() if k not in SOURCE_KEYS and k not in FOLLOW_KEYS}
+        if not s.get("id"):
+            meta["id"] = ""  # not resolved yet: ref is what the user typed; fetch_channel fills in the real id
+        sources.append((kind, key, s.get("name") or "", json.dumps(meta, ensure_ascii=False), s.get("last_fetched"), s.get("error") or None))
+        follows.append((USER_ID, kind, key, json.dumps(s.get("tags") or []), int(bool(s.get("muted"))), s.get("min_minutes"),
+                        s.get("note") or "", s.get("added")))
+    db.executemany("""INSERT INTO sources (kind, ref, name, meta_json, last_fetched, error) VALUES (?, ?, ?, ?, ?, ?)
+                      ON CONFLICT (kind, ref) DO UPDATE SET name = excluded.name, meta_json = excluded.meta_json,
+                      last_fetched = excluded.last_fetched, error = excluded.error""", sources)
+    db.execute("DELETE FROM follows WHERE user_id = ?", (USER_ID,))
+    db.executemany("""INSERT OR REPLACE INTO follows (user_id, source_id, tags, muted, min_minutes, note, added)
+                      VALUES (?, (SELECT id FROM sources WHERE kind = ? AND ref = ?), ?, ?, ?, ?, ?)""", follows)
+    db.execute("DELETE FROM sources WHERE id NOT IN (SELECT source_id FROM follows) AND id NOT IN (SELECT source_id FROM items)")
+
+def load_marks():
+    """marks rows → {'seen': id → timestamp, 'saved': id → snapshot of the item with tags_mine / note}."""
+    seen, saved = {}, {}
+    with LOCK:
+        rows = DB.execute("SELECT item_id, seen_at, saved_at, snapshot_json FROM marks WHERE user_id = ? ORDER BY rowid", (USER_ID,)).fetchall()
+    for r in rows:
+        if r["seen_at"] is not None:
+            seen[r["item_id"]] = r["seen_at"]
+        if r["saved_at"] is not None:
+            saved[r["item_id"]] = json.loads(r["snapshot_json"]) if r["snapshot_json"] else r["saved_at"]  # old entries: just a time
+    return {"seen": seen, "saved": saved}
+
+def write_marks(db, field, ids):
+    """Write the in-memory seen / saved entries for `ids` to the marks table (a missing entry clears that column)."""
+    for i in ids:
+        v = SEEN_STATE[field].get(i)
+        if field == "seen":
+            db.execute("""INSERT INTO marks (user_id, item_id, seen_at) VALUES (?, ?, ?)
+                          ON CONFLICT (user_id, item_id) DO UPDATE SET seen_at = excluded.seen_at""", (USER_ID, i, v))
+        else:
+            rec = v if isinstance(v, dict) else None
+            db.execute("""INSERT INTO marks (user_id, item_id, saved_at, tags, note, snapshot_json) VALUES (?, ?, ?, ?, ?, ?)
+                          ON CONFLICT (user_id, item_id) DO UPDATE SET saved_at = excluded.saved_at, tags = excluded.tags,
+                          note = excluded.note, snapshot_json = excluded.snapshot_json""",
+                       (USER_ID, i, rec.get("saved_at") if rec else v, json.dumps(rec.get("tags_mine") or []) if rec else "[]",
+                        (rec.get("note") or "") if rec else "", json.dumps(rec, ensure_ascii=False) if rec else None))
+    db.execute("DELETE FROM marks WHERE user_id = ? AND seen_at IS NULL AND saved_at IS NULL", (USER_ID,))
+
+def load_cache():
+    cache = {"durations": {}, "shorts": {}}
+    with LOCK:
+        for r in DB.execute("SELECT kind, key, value FROM cache").fetchall():
+            cache.setdefault(r["kind"], {})[r["key"]] = json.loads(r["value"])
+    return cache
+
+def write_items(db, items):
+    """Upsert feed items, keyed by source and external id. Items of sources not in the table are skipped."""
+    now = time.time()
+    ids = {(r["kind"], r["ref"]): r["id"] for r in db.execute("SELECT id, kind, ref FROM sources").fetchall()}
+    rows = []
+    for it in items:
+        sid = ids.get((it.get("kind"), it.get("cid")))
+        if sid is None or not it.get("id"):
+            continue
+        it = dict(it)
+        fetched = it.pop("fetched", None) or now  # exports carry the time an item was last seen in its feed
+        rows.append((sid, it["kind"], it["id"], it.get("title") or "", it.get("author") or "", float(it.get("ts") or now),
+                     json.dumps(it, ensure_ascii=False), fetched))
+    db.executemany("""INSERT INTO items (source_id, kind, ext_id, title, author, ts, payload_json, fetched) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                      ON CONFLICT (source_id, ext_id) DO UPDATE SET title = excluded.title, author = excluded.author, ts = excluded.ts,
+                      payload_json = excluded.payload_json, fetched = excluded.fetched""", rows)
+    return len(rows)
+
+def prune_items(db):
+    """Items that dropped out of their feed more than keep_days ago go; saved ones never do."""
+    days = max(1, int(CONFIG.get("keep_days") or 90))
+    db.execute("DELETE FROM items WHERE fetched < ? AND ext_id NOT IN (SELECT item_id FROM marks WHERE saved_at IS NOT NULL)",
+               (time.time() - days * 86400,))
+
+def load_items(limit=None):
+    """Newest items first, with what the cache now knows about durations and Shorts applied to videos."""
+    limit = limit or max(5000, 10 * int(CONFIG.get("max_items") or 400))
+    with LOCK:
+        rows = DB.execute("SELECT payload_json FROM items ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        it = json.loads(r["payload_json"])
+        if it.get("kind") == "yt":
+            it["dur"] = CACHE["durations"].get(it["id"], it.get("dur"))
+            it["short"] = CACHE["shorts"].get(it["id"], it.get("short", False))
+        out.append(it)
+    return out
+
+def export_data():
+    """Everything in the database as one JSON-able dict: the old config / state / cache shapes plus the stored items."""
+    with LOCK:
+        rows = DB.execute("SELECT payload_json, fetched FROM items ORDER BY ts DESC").fetchall()
+        return {"quietfeed_export": 1, "exported_at": int(time.time()),
+                "config": json.loads(json.dumps(CONFIG)), "state": json.loads(json.dumps(SEEN_STATE)),
+                "cache": json.loads(json.dumps(CACHE)),
+                "items": [{**json.loads(r["payload_json"]), "fetched": r["fetched"]} for r in rows]}
+
+def import_data(data):
+    """Merge a JSON export (or a bare config.json / state.json / cache.json) into memory and the database.
+    Nothing is removed: new follows, marks and items are added; settings in the file replace the current ones."""
+    if "youtube" in data or "twitter" in data:
+        data = {"config": data}
+    elif "seen" in data or "saved" in data:
+        data = {"state": data}
+    elif "durations" in data or "shorts" in data:
+        data = {"cache": data}
+    global FIRST_RUN
+    n = Counter()
+    lists = {v: k for k, v in SUB_LISTS.items()}
+    cfg = data.get("config") or {}
+    with LOCK:
+        if FIRST_RUN and any((k, kk) in lists for k, v in cfg.items() if isinstance(v, dict) for kk in v):
+            for sec, key in lists:  # a new database holds nothing but the starter channels: they give way to the import
+                CONFIG[sec][key] = []
+            FIRST_RUN = False
+        for k, v in cfg.items():
+            if not isinstance(v, dict):
+                CONFIG[k] = v
+                continue
+            CONFIG.setdefault(k, {})
+            for kk, vv in v.items():
+                if (k, kk) not in lists:
+                    CONFIG[k][kk] = vv
+                    continue
+                cur = CONFIG[k].setdefault(kk, [])
+                have = {(s.get("id") or s.get("ref")) if isinstance(s, dict) else s for s in cur}
+                for s in vv if isinstance(vv, list) else []:
+                    key = (s.get("id") or s.get("ref")) if isinstance(s, dict) else s
+                    if key and key not in have:
+                        have.add(key)
+                        cur.append(s)
+                        n["follows"] += 1
+        normalize_subscriptions()  # plain strings → records, duplicates dropped
+        save_config()
+        st = data.get("state") or {}
+        seen_ids, saved_ids = [], []
+        for i, ts in (st.get("seen") or {}).items():
+            if i not in SEEN_STATE["seen"]:
+                SEEN_STATE["seen"][i] = ts
+                seen_ids.append(i)
+        for i, v in (st.get("saved") or {}).items():
+            cur = SEEN_STATE["saved"].get(i)
+            SEEN_STATE["saved"][i] = {**cur, **v} if isinstance(cur, dict) and isinstance(v, dict) else v
+            saved_ids.append(i)
+        for kind, d in (data.get("cache") or {}).items():
+            for key, v in (d or {}).items():
+                cache_put(kind, key, v)
+        with tx() as db:
+            write_marks(db, "seen", seen_ids)
+            write_marks(db, "saved", saved_ids)
+            n["seen"], n["saved"] = len(seen_ids), len(saved_ids)
+            n["items"] = write_items(db, data.get("items") or [])
+        save_cache()
+    return n
+
+def migrate_legacy_json():
+    """First run next to the old JSON files: pull them into the database, then rename them *.json.migrated."""
+    found = {k: p for k, p in LEGACY_JSON.items() if os.path.exists(p)}
+    if not found:
+        return False
+    data = {k: load_json(p, None) for k, p in found.items()}
+    import_data({k: v for k, v in data.items() if isinstance(v, dict)})
+    for p in found.values():
+        os.replace(p, p + ".migrated")
+    log("migrated " + ", ".join(os.path.basename(p) for p in found.values())
+        + " into quietfeed.db; the old files are kept as *.json.migrated")
+    return True
+
 # ---------------------------------------------------------------- state
 
-CONFIG = load_json(CONFIG_PATH, None)
-FIRST_RUN = CONFIG is None
-if FIRST_RUN:
-    CONFIG = json.loads(json.dumps(DEFAULT_CONFIG))
+CONFIG = load_settings()
 for k, v in DEFAULT_CONFIG.items():  # fill in keys added by newer versions
     if k not in CONFIG:
         CONFIG[k] = json.loads(json.dumps(v))
     elif isinstance(v, dict):
         for kk, vv in v.items():
             CONFIG[k].setdefault(kk, json.loads(json.dumps(vv)))
+for _kind, (_sec, _key) in SUB_LISTS.items():
+    if not NEW_DB:  # a new database keeps DEFAULT_CONFIG's starter channels until normalize_subscriptions() writes them
+        CONFIG[_sec][_key] = load_subs(_kind)
+FIRST_RUN = NEW_DB  # cleared below if the old JSON files were migrated instead
 
-CACHE = load_json(CACHE_PATH, {})
-for k in ("durations", "shorts"):
-    CACHE.setdefault(k, {})
-SEEN_STATE = load_json(STATE_PATH, {})
-for k in ("seen", "saved"):
-    SEEN_STATE.setdefault(k, {})
+CACHE = load_cache()
+CACHE_DIRTY = set()  # (kind, key) pairs changed since the last save_cache
+SEEN_STATE = load_marks()
 
-LOCK = threading.RLock()
-STATE = {"items": [], "errors": [], "last_refresh": None, "refreshing": False}
+STATE = {"items": load_items(), "errors": [], "last_refresh": None, "refreshing": False}
 AVATARS = {}  # in-memory bytes cache
 
 def save_config():
-    with LOCK:
-        save_json(CONFIG_PATH, CONFIG)
+    with tx() as db:
+        write_config(db)
 
-def save_state():
+def cache_put(kind, key, value):
     with LOCK:
-        save_json(STATE_PATH, SEEN_STATE)
+        CACHE[kind][key] = value
+        CACHE_DIRTY.add((kind, key))
 
 def save_cache():
-    with LOCK:
-        for k in ("durations", "shorts"):
-            d = CACHE[k]
-            if len(d) > 20000:  # keep the newest entries (dicts keep insertion order)
-                CACHE[k] = dict(list(d.items())[-10000:])
-        save_json(CACHE_PATH, CACHE)
+    with tx() as db:
+        db.executemany("INSERT OR REPLACE INTO cache (kind, key, value) VALUES (?, ?, ?)",
+                       [(k, key, json.dumps(CACHE[k].get(key))) for k, key in CACHE_DIRTY])
+        CACHE_DIRTY.clear()
 
 # ---------------------------------------------------------------- subscriptions (all kinds)
 
@@ -301,8 +578,17 @@ def normalize_subscriptions():
             changed = True
         elif isinstance(s, dict):
             ax.append(s)
-    CONFIG["youtube"]["channels"], CONFIG["twitter"]["users"] = yt, tw
-    CONFIG["rss"]["feeds"], CONFIG["arxiv"]["queries"] = rss, ax
+    for kind, lst in (("yt", yt), ("tw", tw), ("rss", rss), ("arxiv", ax)):  # the same thing twice (an import): keep the first
+        keys, uniq = set(), []
+        for s in lst:
+            key = s.get("id") or s.get("ref") or ""
+            if key in keys:
+                changed = True
+                continue
+            keys.add(key)
+            uniq.append(s)
+        sec, name = SUB_LISTS[kind]
+        CONFIG[sec][name] = uniq
     if changed or FIRST_RUN:
         save_config()
 
@@ -488,18 +774,17 @@ def fetch_channel(sub):
     need = [r["id"] for r in raw if r["id"] not in CACHE["shorts"] or r["id"] not in CACHE["durations"]]
     if need:
         durs, shorts = yt_scan_channel(cid)
-        with LOCK:
-            for v, s in durs.items():
-                CACHE["shorts"][v] = False
-                if s is not None:
-                    CACHE["durations"][v] = s
-            for v in shorts:
-                CACHE["shorts"][v] = True
+        for v, s in durs.items():
+            cache_put("shorts", v, False)
+            if s is not None:
+                cache_put("durations", v, s)
+        for v in shorts:
+            cache_put("shorts", v, True)
         for v in need:  # neither tab listed it (live stream, premiere, old): ask YouTube directly
             if v not in CACHE["shorts"]:
                 code, _ = head_no_redirect(f"https://www.youtube.com/shorts/{v}")
                 if code:
-                    CACHE["shorts"][v] = (code == 200)
+                    cache_put("shorts", v, code == 200)
     for r in raw:
         r["dur"] = CACHE["durations"].get(r["id"])
         r["short"] = CACHE["shorts"].get(r["id"], False)
@@ -745,6 +1030,7 @@ def refresh():
             try:
                 r = fn(sub)
                 sub.pop("error", None)
+                sub["last_fetched"] = time.time()
                 return r
             except Exception as ex:
                 sub["error"] = str(ex)
@@ -757,12 +1043,14 @@ def refresh():
         for (k, _), l in zip(jobs, lists):
             counts[k] += len(l)
             items.extend(l)
-        items.sort(key=lambda x: -x["ts"])
-        with LOCK:
-            STATE["items"], STATE["errors"] = items, errors
-            STATE["last_refresh"] = time.time()
+        save_config()  # resolved ids, names, errors; also makes sure every fetched item has its source row
         save_cache()
-        save_config()
+        with tx() as db:  # what the feeds returned goes into the items table; the feed itself is read back from there
+            write_items(db, items)
+            prune_items(db)
+        with LOCK:
+            STATE["items"], STATE["errors"] = load_items(), errors
+            STATE["last_refresh"] = time.time()
         log(f"done: {counts['yt']} videos, {counts['tw']} tweets, {counts['rss']} posts, {counts['arxiv']} papers, {len(errors)} errors")
         for e in errors:
             log("  !", e)
@@ -881,9 +1169,13 @@ def mark(ids, field, on, item=None, patch=None):
                 d[i] = rec
             else:
                 d[i] = int(time.time())
+        touched = set(ids)
         if field == "seen" and len(d) > 5000:
-            SEEN_STATE["seen"] = dict(sorted(d.items(), key=lambda kv: kv[1])[-4000:])
-        save_state()
+            keep = dict(sorted(d.items(), key=lambda kv: kv[1])[-4000:])
+            touched |= set(d) - set(keep)
+            SEEN_STATE["seen"] = keep
+        with tx() as db:
+            write_marks(db, field, touched)
 
 # ---------------------------------------------------------------- import / follow
 
@@ -1511,11 +1803,41 @@ class Handler(BaseHTTPRequestHandler):
             log("POST", p.path, "failed:", ex)
             self._send({"error": str(ex)}, code=500)
 
+if NEW_DB and migrate_legacy_json():
+    FIRST_RUN = False
+    STATE["items"] = load_items()
 normalize_subscriptions()
 
+USAGE = """usage: quietfeed.py [--port N] [--no-open] [--export] [--import FILE]
+  --port N        listen on another port (default 8765)
+  --no-open       do not open the page in a browser
+  --export        print everything in quietfeed.db (settings, follows, seen/saved, cache, items) as JSON on stdout and exit
+  --import FILE   merge a JSON export, or an old config.json / state.json / cache.json, into quietfeed.db and exit
+                  (nothing is removed; stop a running quietfeed first)"""
+
 if __name__ == "__main__":
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(USAGE)
+        sys.exit(0)
+    if "--export" in sys.argv:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+        json.dump(export_data(), sys.stdout, indent=2, ensure_ascii=False)
+        print()
+        sys.exit(0)
+    if "--import" in sys.argv:
+        i = sys.argv.index("--import")
+        if i + 1 >= len(sys.argv):
+            print(USAGE)
+            sys.exit(2)
+        with open(sys.argv[i + 1], encoding="utf-8") as f:
+            n = import_data(json.load(f))
+        log(f"imported into quietfeed.db: {n['follows']} new follows, {n['seen']} seen, {n['saved']} saved, {n['items']} items")
+        sys.exit(0)
     if FIRST_RUN:
-        log("Wrote config.json — open the page and use the 'following' tab to import your subscriptions.")
+        log("Created quietfeed.db — open the page and use the 'following' tab to import your subscriptions.")
     port = PORT
     for i, a in enumerate(sys.argv):
         if a == "--port" and i + 1 < len(sys.argv):
