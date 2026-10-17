@@ -25,6 +25,10 @@ First run creates `quietfeed.db` next to the program and opens the page. Standar
 
 The papers view has its own toolbar: **latest** shows the newest listing you have (arXiv dates papers by submission and lists them a day or two later, so this is keyed to the newest batch, not the clock), **3 days / week / all** count back from now. The search box asks arXiv directly: keywords (quote a phrase), author, a date range, sorted by newest, last updated or relevance. Click an author's name on any paper to follow them or list their papers; followed authors are highlighted. Every paper has abstract, abs and pdf links, copy link, and save.
 
+## Search
+
+The box in the feed bar filters what you follow as you type: titles, authors, descriptions, tweets and paper abstracts, within the chip you are on. If nothing you follow matches, one more click (or Enter) asks YouTube for that phrase and shows a flat list of videos with play, save and the channel's page, nothing recommended around it. Searching is a thing you do on purpose; the feed never suggests.
+
 ## Following
 
 The *following* tab. Type a channel name and it searches YouTube channels; paste a `youtube.com` or `x.com` link, an `@handle` or a channel id and it is added directly. For Substack / RSS paste the site or feed link. For arXiv type a category, `au:Name Surname`, or keywords.

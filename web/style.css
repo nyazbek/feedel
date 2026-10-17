@@ -62,6 +62,9 @@ h2.sub .meta{font-weight:400}
 .srchead .fields input{font-size:14px;padding:3px 8px}
 .srchead .fields input.tags{width:180px}.srchead .fields input.note{width:260px}.srchead .fields input.mm{width:48px}
 #linkform{margin:0 0 10px;padding-bottom:10px}
+#feedsearch{width:150px;font-size:14px;padding:4px 8px;background:transparent;border-color:transparent;border-bottom-color:var(--line);border-radius:0}
+#feedsearch:focus{border-bottom-color:var(--mut)}
+.offer{padding:14px 0 4px;text-align:center}
 .share{margin-top:10px;padding:10px 12px;background:var(--soft);border-radius:8px}
 .share textarea{width:100%;font-size:15px;margin-bottom:6px}
 .share input{width:100%;font-size:14px}

@@ -736,6 +736,32 @@ def yt_search(q):
                     "following": find_sub("yt", cid) is not None})
     return out[:20]
 
+def yt_video_search(q):
+    """A deliberate search for videos on YouTube: a flat list of what matched, fetched by this program,
+    with no recommendations around it. Shorts and results without a length are left out."""
+    page = yt_page("https://www.youtube.com/results?" + urlencode({"search_query": q, "sp": "EgIQAQ=="}))
+    out, seen = [], set()
+    units = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800, "month": 2592000, "year": 31536000,
+             "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "mo": 2592000, "y": 31536000}  # "10y ago", "3mo ago"
+    for v in walk(yt_initial_data(page), "videoRenderer"):
+        vid = v.get("videoId")
+        dur = parse_duration(rtext(v.get("lengthText")))
+        if not vid or vid in seen or dur is None:
+            continue
+        seen.add(vid)
+        owner = (v.get("ownerText") or {}).get("runs") or [{}]
+        cid = owner[0].get("navigationEndpoint", {}).get("browseEndpoint", {}).get("browseId", "")
+        ts = time.time()
+        m = re.search(r"(\d+)\s*(second|minute|hour|day|week|month|year|mo|s|m|h|d|w|y)\b", rtext(v.get("publishedTimeText")))
+        if m:
+            ts -= int(m.group(1)) * units[m.group(2)]
+        cache_put("durations", vid, dur)
+        out.append({"kind": "yt", "id": vid, "cid": cid, "title": rtext(v.get("title")), "author": rtext(v.get("ownerText")),
+                    "ts": ts, "dur": dur, "short": False, "desc": "", "tags": [],
+                    "follow": {"kind": "yt", "ref": cid, "name": rtext(v.get("ownerText"))} if cid else None,
+                    "following": find_sub("yt", cid) is not None})
+    return out[:20]
+
 def subs_number(s):
     m = re.match(r"([\d.]+)\s*([KMB]?)", s or "")
     if not m:
@@ -2467,6 +2493,9 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/search":
                 s = q.get("q", [""])[0].strip()
                 return self._send(yt_search(s) if s else [])
+            if p.path == "/api/yt/search":
+                s = q.get("q", [""])[0].strip()
+                return self._send(yt_video_search(s) if s else [])
             if p.path == "/api/arxiv/search":
                 g = lambda k: q.get(k, [""])[0]
                 return self._send(arxiv_search(g("q"), g("author"), g("from"), g("to"), g("sort") or "submittedDate"))

@@ -4,7 +4,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const KIND_LABEL = { yt: 'videos', tw: 'tweets', rss: 'posts', arxiv: 'papers' };
 const KIND_ONE = { yt: 'channel', tw: 'account', rss: 'feed', arxiv: 'query' };
 
-let view = 'feed', kindFilter = 'all', tagFilter = null, paperWindow = 1, axResults = null;
+let view = 'feed', kindFilter = 'all', tagFilter = null, paperWindow = 1, axResults = null, feedQuery = '', ytResults = null;
 let libKind = 'all', libTag = null;
 let data = null, subs = null;
 const seen = new Set(), saved = new Set();
@@ -232,7 +232,14 @@ function renderFeed() {
     L.innerHTML = axResults.length ? `<div class="day">${axResults.length} results from arXiv</div>` + axResults.map(article).join('') : '<div class="empty">arXiv found nothing for that</div>';
     return;
   }
-  let items = data.items.filter(i => (kindFilter === 'all' || i.kind === kindFilter) && (!tagFilter || i.tags.includes(tagFilter)) && !(s.hide_seen && seen.has(i.id)));
+  if (ytResults) {  // a deliberate search on YouTube: a flat list, nothing around it
+    L.innerHTML = `<div class="day">from YouTube · ${esc(feedQuery)} · <button class="link" data-a="yt-clear">back to your feed</button></div>`
+      + (ytResults.length ? ytResults.map(article).join('') : '<div class="empty">YouTube found nothing for that</div>');
+    return;
+  }
+  const q = feedQuery.toLowerCase();
+  const hit = i => !q || [i.title, i.author, i.desc, ...(i.authors || []), ...(i.tags || [])].some(x => (x || '').toLowerCase().includes(q));
+  let items = data.items.filter(i => (kindFilter === 'all' || i.kind === kindFilter) && (!tagFilter || i.tags.includes(tagFilter)) && !(s.hide_seen && seen.has(i.id)) && hit(i));
   if (papers && paperWindow) {
     // arXiv dates a paper by submission and lists it a day or two later, so "latest" means the newest batch
     // (within a day of the newest paper you have), and the longer windows count back from now.
@@ -240,9 +247,10 @@ function renderFeed() {
     const cut = paperWindow === 1 ? newest - 86400 : Date.now() / 1000 - paperWindow * 86400;
     items = items.filter(i => i.ts >= cut);
   }
+  const ytOffer = q && (kindFilter === 'all' || kindFilter === 'yt') ? `<div class="offer meta">not in what you follow? <button class="link" data-a="yt-search">search YouTube for “${esc(feedQuery)}”</button></div>` : '';
   if (!items.length) {
     const n = Object.values(data.counts).reduce((a, b) => a + b, 0);
-    L.innerHTML = `<div class="empty">${n ? (data.last_refresh ? (papers && paperWindow ? 'no papers in this window' : papers ? 'no papers yet — follow a category or author in <b>following</b>' : 'nothing here') : 'fetching your sources…') : 'you are not following anything yet — open <b>following</b> to import or search'}</div>`;
+    L.innerHTML = `<div class="empty">${q ? 'nothing you follow matches' : n ? (data.last_refresh ? (papers && paperWindow ? 'no papers in this window' : papers ? 'no papers yet — follow a category or author in <b>following</b>' : 'nothing here') : 'fetching your sources…') : 'you are not following anything yet — open <b>following</b> to import or search'}</div>` + ytOffer;
     return;
   }
   let html = '', day = null, dayPapers = [];
@@ -254,7 +262,13 @@ function renderFeed() {
     html += article(i);
   }
   flushPapers();
-  L.innerHTML = html;
+  L.innerHTML = html + ytOffer;
+}
+
+async function searchYouTube() {
+  const L = $('#list'); L.innerHTML = '<div class="empty">asking YouTube…</div>';
+  try { ytResults = await api('/api/yt/search?q=' + encodeURIComponent(feedQuery)); render(); }
+  catch (e) { ytResults = null; render(); toast(e.message, 5000); }
 }
 
 function inboxRow(i) {
@@ -360,7 +374,7 @@ async function setMark(id, field, on) {
 /* ------------------------------------------------------------ share to Zulip */
 
 function itemLink(i) { return i.kind === 'yt' ? 'https://www.youtube.com/watch?v=' + i.id : (i.link || i.id); }
-function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || (data.inbox || []).find(i => i.id === id) || savedItems[id]; }
+function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || (ytResults || []).find(i => i.id === id) || (data.inbox || []).find(i => i.id === id) || savedItems[id]; }
 function snapshot(item) { return Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k))); }
 
 function openShare(art) {
@@ -647,7 +661,9 @@ document.addEventListener('click', async e => {
   if (b.dataset.v) { view = b.dataset.v; location.hash = view === 'feed' ? '' : view; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
-  if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; if (kindFilter === 'talk') talk = null; render(); return; }
+  if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; if (kindFilter === 'talk') talk = null; ytResults = null; render(); return; }
+  if (b.dataset.a === 'yt-search') { searchYouTube(); return; }
+  if (b.dataset.a === 'yt-clear') { ytResults = null; render(); return; }
   if (b.dataset.a === 'disc') { openThread(b.closest('article, .topic'), b.dataset.topic, b.dataset.stream || ''); return; }
   if (b.dataset.a === 'unf-follow') { const { kind, ref, name } = b.dataset; b.disabled = true; try { await followRef(ref, kind, name); await loadUnfollowed(); } catch (err) { toast(err.message); b.disabled = false; } return; }
   if (b.dataset.a === 'unf-forget') { await api('/api/unfollowed/forget', { kind: b.dataset.kind, ref: b.dataset.ref }); await loadUnfollowed(); return; }
@@ -743,6 +759,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('input', e => {
   const inp = e.target;
   if (inp.id === 'subfilter') return renderSubs();
+  if (inp.id === 'feedsearch') { feedQuery = inp.value.trim(); ytResults = null; render(); return; }
   if (inp.id === 'addq') { const k = guessKind(inp.value.trim()); if (k && $('#addkind').value !== k) { $('#addkind').value = k; $('#addhint').textContent = HINTS[k]; } return; }
   if (inp.id === 'libsearch') return renderLibrary();
   if (inp.dataset.k && inp.closest('.person')) {
@@ -771,7 +788,10 @@ const drop = $('#drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); importFiles(e.dataTransfer.files); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#settings').hidden = true; });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { $('#settings').hidden = true; if (document.activeElement === $('#feedsearch')) { $('#feedsearch').value = ''; feedQuery = ''; ytResults = null; render(); } }
+  if (e.key === 'Enter' && document.activeElement === $('#feedsearch') && feedQuery && (kindFilter === 'all' || kindFilter === 'yt') && !document.querySelector('#list article')) searchYouTube();
+});
 
 let theme = null; try { theme = localStorage.getItem('theme'); } catch (e) { /* ignore */ }
 applyTheme(theme);
