@@ -635,6 +635,9 @@ def fetch_rss(sub):
 # ---------------------------------------------------------------- arxiv
 
 ARXIV_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+ARXIV_ARCHIVES = ("math", "cs", "stat", "physics", "q-bio", "q-fin", "econ", "eess", "nlin", "astro-ph", "cond-mat",
+                  "hep-th", "hep-ph", "hep-ex", "hep-lat", "gr-qc", "quant-ph", "nucl-th", "nucl-ex", "math-ph")
+ARXIV_CAT_RE = r"(?:%s)(?:\.[A-Za-z\-]{2,12})?" % "|".join(re.escape(a) for a in ARXIV_ARCHIVES)
 ARXIV_LAST = [0.0]
 ARXIV_LOCK = threading.Lock()
 
@@ -897,8 +900,11 @@ def parse_ref(tok, default_kind="yt"):
         return "yt", tok
     if default_kind == "arxiv" and "://" not in tok:
         return "arxiv", tok
+    # things that are unambiguous whatever the dropdown says: arXiv categories/authors, bare domains
+    if re.match(r"^(au|author|cat):", tok, re.I) or re.fullmatch(ARXIV_CAT_RE, tok):
+        return "arxiv", tok
     if "://" in tok or re.match(r"^(www\.|m\.|mobile\.)?(youtube\.com|youtu\.be|x\.com|twitter\.com|xcancel\.com|nitter\.[\w.]+|arxiv\.org)/", tok, re.I) \
-            or (default_kind == "rss" and re.match(r"^[\w.-]+\.[a-z]{2,}(/|$)", tok, re.I)):
+            or (not tok.startswith("@") and re.fullmatch(r"(?:[\w-]+\.)+[a-z]{2,24}(?:/\S*)?", tok, re.I)):
         u = urlparse(tok if "://" in tok else "https://" + tok)
         host = re.sub(r"^(www|m|mobile|music)\.", "", u.netloc.lower())
         parts = [p for p in u.path.split("/") if p]

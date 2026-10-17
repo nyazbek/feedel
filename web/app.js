@@ -265,7 +265,7 @@ async function saveSettings() {
 /* ------------------------------------------------------------ following */
 
 const HINTS = {
-  yt: 'a name searches YouTube channels; @handle, channel id or link follows directly',
+  yt: 'a name searches YouTube channels; @handle, channel id or link follows directly. For an X handle, switch the dropdown to X first',
   tw: 'a handle or an x.com link (no search on X)',
   rss: 'any site or feed link — substack.com pages, blogs, newsletters',
   arxiv: 'a category (math.PR, cs.LG, math for all of it), an author (au:Name Surname), or keywords to watch',
@@ -320,6 +320,16 @@ function queueSubUpdate(kind, id, patch) {
     try { await api('/api/subs/update', { kind, id, patch }); const s = subs.find(x => x.kind === kind && x.id === id); if (s) Object.assign(s, patch, patch.tags !== undefined ? { tags: String(patch.tags).split(',').map(t => t.trim().toLowerCase()).filter(Boolean) } : {}); }
     catch (e) { toast('could not save: ' + e.message); }
   }, 500);
+}
+
+function guessKind(q) {
+  // mirrors the server's parse_ref: what is unambiguous switches the dropdown so you see what will happen
+  if (/^(https?:\/\/)?(www\.|m\.|mobile\.)?(x\.com|twitter\.com|xcancel\.com|nitter\.)/i.test(q)) return 'tw';
+  if (/^(https?:\/\/)?(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i.test(q) || /^UC[\w-]{22}$/.test(q)) return 'yt';
+  if (/^(https?:\/\/)?(www\.)?arxiv\.org\//i.test(q) || /^(au|author|cat):/i.test(q)) return 'arxiv';
+  if (/^(math|cs|stat|physics|q-bio|q-fin|econ|eess|nlin|astro-ph|cond-mat|hep-th|hep-ph|hep-ex|hep-lat|gr-qc|quant-ph|nucl-th|nucl-ex|math-ph)(\.[A-Za-z-]{2,12})?$/.test(q)) return 'arxiv';
+  if (/^https?:\/\//i.test(q) || (!q.startsWith('@') && /^([\w-]+\.)+[a-z]{2,24}(\/\S*)?$/i.test(q))) return 'rss';
+  return null;
 }
 
 function looksDirect(q, kind) {
@@ -481,6 +491,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('input', e => {
   const inp = e.target;
   if (inp.id === 'subfilter') return renderSubs();
+  if (inp.id === 'addq') { const k = guessKind(inp.value.trim()); if (k && $('#addkind').value !== k) { $('#addkind').value = k; $('#addhint').textContent = HINTS[k]; } return; }
   if (inp.id === 'libsearch') return renderLibrary();
   if (inp.dataset.k && inp.closest('.person')) {
     const { kind, id } = inp.closest('.person').dataset;
