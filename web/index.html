@@ -36,6 +36,8 @@
     <label><input type="checkbox" id="s_watch_clipboard"> watch the clipboard: links I copy (WhatsApp, mail, anywhere) land in the inbox</label>
     <label><input type="checkbox" id="s_clipboard_any"> …including links to ordinary pages, not only YouTube, X and arXiv</label>
   </div>
+  <label class="block">when quietfeed is the link handler, send the links it cannot show to
+    <input id="s_fallback_browser" placeholder="auto"> <span class="meta" id="s_fallback_auto"></span></label>
   <label class="block">hide anything whose title contains (one per line; wrap in / / for a regex)
     <textarea id="s_block_words" rows="3" placeholder="giveaway&#10;reacts to&#10;/\b(top|best) \d+\b/"></textarea></label>
   <h2 class="sub">Zulip <span class="meta">— where the conversation lives. “share” posts an item and your note there, as you.</span></h2>

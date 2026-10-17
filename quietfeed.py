@@ -1159,6 +1159,7 @@ def settings_payload():
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
+            "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             **CONFIG["ui"]}
 
 def items_payload():
@@ -1187,6 +1188,8 @@ def update_settings(patch):
         for k in ("hide_thumbnails", "calm_titles", "hide_seen", "watch_clipboard", "clipboard_any"):
             if k in patch:
                 CONFIG["ui"][k] = bool(patch[k])
+        if "fallback_browser" in patch:
+            CONFIG["fallback_browser"] = str(patch["fallback_browser"] or "").strip().strip('"')
         if isinstance(patch.get("zulip"), dict):
             z = CONFIG.setdefault("zulip", {})
             for k in ("site", "email", "stream"):
@@ -1881,18 +1884,56 @@ def _safe_take(url, via):
     except Exception as ex:
         log(f"  inbox ({via}) failed for {url}: {ex}")
 
+def system_default_browser():
+    """Windows: the executable behind the current default browser for https links, or None.
+    Returns None too when that default is quietfeed itself (after --register-handler)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice") as k:
+            prog = winreg.QueryValueEx(k, "ProgId")[0]
+        if not prog or prog.lower().startswith("quietfeed"):
+            return None
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog + r"\shell\open\command") as k:
+            cmd = winreg.QueryValueEx(k, "")[0]
+        m = re.match(r'\s*"([^"]+\.exe)"|\s*(\S+\.exe)', cmd, re.I)
+        exe = (m.group(1) or m.group(2)) if m else None
+        return exe if exe and os.path.isfile(exe) else None
+    except OSError:
+        return None
+
+def remember_default_browser():
+    """Store the current default browser as the fallback once, while it is still knowable."""
+    if CONFIG.get("fallback_browser"):
+        return None
+    b = system_default_browser()
+    if b:
+        with LOCK:
+            CONFIG["fallback_browser"] = b
+            save_config()
+        log("  links quietfeed cannot show will go to", b)
+    return b
+
 def browser_for_the_rest():
-    """The browser `--open` hands non-quietfeed links to: the configured one, else the first installed."""
+    """The browser `--open` hands non-quietfeed links to: the configured one, else the system default,
+    else the first browser found."""
     b = CONFIG.get("fallback_browser") or ""
-    if b and (os.path.isfile(b) or find_exe(b)):
-        return b if os.path.isfile(b) else find_exe(b)
+    if b:
+        p = b if os.path.isfile(b) else find_exe(b)
+        if p:
+            return p
+    p = system_default_browser()
+    if p:
+        return p
     pf, pfx, la = os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", ""), os.environ.get("LOCALAPPDATA", "")
-    for c in [os.path.join(pf, "Mozilla Firefox", "firefox.exe"), os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+    for c in [os.path.join(la, "Vivaldi", "Application", "vivaldi.exe"), os.path.join(pf, "Vivaldi", "Application", "vivaldi.exe"),
+              os.path.join(pf, "Mozilla Firefox", "firefox.exe"), os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
               os.path.join(la, "Google", "Chrome", "Application", "chrome.exe"), os.path.join(pfx, "Microsoft", "Edge", "Application", "msedge.exe"),
               os.path.join(pf, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")]:
         if os.path.isfile(c):
             return c
-    for n in ("firefox", "chrome", "msedge", "brave", "chromium"):
+    for n in ("vivaldi", "firefox", "chrome", "msedge", "brave", "chromium"):
         p = find_exe(n)
         if p:
             return p
@@ -1965,7 +2006,17 @@ def register_handler(on=True):
     put(base + r"\Capabilities\URLAssociations", {"http": "quietfeedURL", "https": "quietfeedURL"})
     put(base + r"\shell\open\command", {"": cmd})
     put(r"Software\RegisteredApplications", {"quietfeed": base + r"\Capabilities"})
-    return "registered: now pick quietfeed under Settings → Apps → Default apps → Web browser"
+    # remember today's default browser before it becomes quietfeed; through the running instance if there is one,
+    # so its in-memory settings do not overwrite ours on its next save
+    kept = CONFIG.get("fallback_browser") or system_default_browser()
+    if kept and not CONFIG.get("fallback_browser"):
+        try:
+            fetch(f"http://localhost:{PORT}/api/settings", timeout=3, data=json.dumps({"fallback_browser": kept}).encode(),
+                  headers={"Content-Type": "application/json"})
+        except Exception:
+            remember_default_browser()
+    return ("registered: now pick quietfeed under Settings → Apps → Default apps → Web browser"
+            + (f"\nother links will keep opening in {kept}" if kept else "\nno default browser detected: set fallback_browser in settings"))
 
 # ---------------------------------------------------------------- zulip (where the conversation lives)
 
@@ -2284,6 +2335,7 @@ if __name__ == "__main__":
         sys.exit(0)
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=clipboard_loop, daemon=True).start()
+    remember_default_browser()
     log(f"quietfeed on http://localhost:{port}  (Ctrl+C to stop)")
     if STATE.get("queued_link"):
         threading.Thread(target=_safe_take, args=(STATE.pop("queued_link"), "link"), daemon=True).start()

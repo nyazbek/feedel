@@ -20,6 +20,7 @@ input,select,textarea{font:inherit;font-size:15px;background:var(--card);color:v
 input:focus,select:focus,textarea:focus{border-color:var(--mut)}
 textarea{width:100%;resize:vertical}
 input.num{width:64px;padding:3px 6px}
+#s_fallback_browser{width:min(100%,420px);font-size:14px;padding:4px 8px}
 label{font-size:15px}
 label.block{display:block;margin:12px 0 4px}
 .meta{color:var(--mut);font-size:14px}
