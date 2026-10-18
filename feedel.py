@@ -1114,7 +1114,7 @@ def tw_thread(url):
     def from_syndication(pid, who=""):
         d = tw_syndication(pid) or {}
         return {"id": pid, "link": f"https://x.com/{d.get('user') or who or 'i'}/status/{pid}", "user": (d.get("user") or who).lower(),
-                "name": d.get("name", ""), "text": html.unescape(d.get("text", "")), "ts": d.get("ts") or time.time(),
+                "name": d.get("name", ""), "text": d.get("text", ""), "ts": d.get("ts") or time.time(),
                 "media": bool(d.get("video") or d.get("photos"))}
 
     def extend_from_cache(posts, me):
