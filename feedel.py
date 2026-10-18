@@ -31,7 +31,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -387,7 +387,7 @@ def write_marks(db, field, ids):
     db.execute("DELETE FROM marks WHERE user_id = ? AND seen_at IS NULL AND saved_at IS NULL", (USER_ID,))
 
 def load_cache():
-    cache = {"durations": {}, "shorts": {}, "tweets": {}, "links": {}, "threads": {}}
+    cache = {"durations": {}, "shorts": {}, "tweets": {}, "links": {}, "threads": {}, "inspire": {}}
     with LOCK:
         for r in DB.execute("SELECT kind, key, value FROM cache").fetchall():
             cache.setdefault(r["kind"], {})[r["key"]] = json.loads(r["value"])
@@ -1318,11 +1318,243 @@ def arxiv_search(q="", author="", date_from="", date_to="", sort="submittedDate"
         raise RuntimeError("type keywords, an author or a date range")
     return arxiv_api(" AND ".join(parts), max_results=max_results, sort=sort)
 
+# ---- the daily announcement. arXiv dates a paper by its submission and announces it a day or two later, in
+# one listing per weekday (none on weekends or holidays). A category subscription reads that listing, so every
+# paper carries the day it was announced and whether it was new, a cross-list or a replacement.
+
+try:
+    from zoneinfo import ZoneInfo
+    ARXIV_TZ = ZoneInfo("America/New_York")
+except Exception:  # no timezone database on this machine: arXiv's clock is close enough to UTC-4
+    ARXIV_TZ = timezone(timedelta(hours=-4))
+ANNOUNCE_RANK = {"new": 0, "cross": 1, "replace": 2}
+
+def arxiv_cat_of(sub):
+    """The category a subscription stands for: cat:math.PR → math.PR, cat:math.* → math (the whole archive)."""
+    return re.sub(r"^cat:|\.\*$", "", sub["id"])
+
+def arxiv_listing_ts(date):
+    """Midnight, arXiv time, of an announcement day: the moment the feed dates its listing."""
+    y, m, d = (int(x) for x in date.split("-"))
+    return datetime(y, m, d, tzinfo=ARXIV_TZ).timestamp()
+
+def announce_day_for(ts):
+    """The listing a submission made at `ts` lands in: received before 14:00 arXiv time on a weekday it is announced
+    that evening and listed under the next weekday; later, or on a weekend, it waits for the next cut. Holidays are
+    ignored, so this is an estimate, used for papers that reach us through the API (authors, keyword watches)."""
+    t = datetime.fromtimestamp(ts, ARXIV_TZ)
+    day = t.date() + timedelta(days=1 if t.hour >= 14 else 0)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    day += timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day.isoformat()
+
+def _text(s):
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", s or "")).split())
+
+def arxiv_item(aid, title, authors, desc, cats, date, atype, comment=""):
+    base = re.sub(r"v\d+$", "", aid)
+    return {"kind": "arxiv", "id": base, "title": title, "authors": authors,
+            "author": ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else ""),
+            "ts": arxiv_listing_ts(date), "updated": None, "desc": desc[:1500], "cats": cats, "primary": cats[0] if cats else "",
+            "link": f"https://arxiv.org/abs/{base}", "pdf": f"https://arxiv.org/pdf/{base}", "ver": aid, "comment": comment[:200],
+            "announce_date": date, "announce_type": atype}
+
+def parse_arxiv_rss(data):
+    """rss.arxiv.org/rss/<cat>: what arXiv announced today for a category, each entry marked new, cross or replace
+    (a replaced cross-list counts as a replacement). Empty on weekends and holidays."""
+    root = ET.fromstring(data)
+    ch = root.find("channel")
+    if ch is None:
+        raise RuntimeError("not an arXiv feed")
+    try:
+        date = parsedate_to_datetime(ch.findtext("pubDate") or "").date().isoformat()
+    except Exception:
+        date = datetime.now(ARXIV_TZ).date().isoformat()
+    out = []
+    for it in ch.findall("item"):
+        link = (it.findtext("link") or "").strip()
+        if "/abs/" not in link:
+            continue
+        desc = it.findtext("description") or ""
+        m = re.search(r"Abstract:\s*(.*)", desc, re.S)
+        atype = (it.findtext("{http://arxiv.org/schemas/atom}announce_type") or "new").strip().lower()
+        atype = "replace" if atype.startswith("replace") else atype if atype in ANNOUNCE_RANK else "new"
+        creators = it.findtext("{http://purl.org/dc/elements/1.1/}creator") or ""
+        authors = [a.strip() for a in re.split(r",\s*|\s+and\s+", creators) if a.strip()]
+        cats = [c.text.strip() for c in it.findall("category") if c.text and c.text.strip()]
+        out.append(arxiv_item(link.rsplit("/abs/", 1)[-1], " ".join((it.findtext("title") or "").split()), authors,
+                              " ".join((m.group(1) if m else desc).split()), cats, date, atype))
+    return out
+
+def parse_arxiv_listing(page):
+    """arxiv.org/list/<cat>/new (the latest listing, in sections new / cross / replacement) or /list/<cat>/pastweek
+    (the last five listings, new and cross-lists only, without abstracts): dated sections of dt/dd entries."""
+    kinds = {"New": "new", "Cross": "cross", "Replacement": "replace"}
+    out, date, section = [], "", "new"
+    for h3, body in re.findall(r"<h3>(.*?)</h3>(.*?)(?=<h3>|\Z)", page, re.S):
+        m = re.search(r"(\d{1,2}) ([A-Za-z]+) (\d{4})", h3)  # "Friday, 16 October 2026" or "Fri, 16 Oct 2026"
+        if m:
+            try:
+                date = datetime.strptime(f"{m.group(1)} {m.group(2)[:3]} {m.group(3)}", "%d %b %Y").date().isoformat()
+                section = "new"
+            except ValueError:
+                pass
+        k = re.match(r"(New|Cross|Replacement) submissions", h3)
+        if k:
+            section = kinds[k.group(1)]
+        if not date:
+            continue
+        for dt, dd in re.findall(r"<dt>(.*?)</dt>\s*<dd>(.*?)</dd>", body, re.S):
+            idm = re.search(r'href ?="/abs/([^"]+)"', dt)
+            if not idm:
+                continue
+            field = lambda cls: _text((re.search(r"<div class=.list-%s[^>]*>(.*?)</div>" % cls, dd, re.S) or [None, ""])[1])
+            title = re.sub(r"^Title:\s*", "", field("title"))
+            comment = re.sub(r"^Comments:\s*", "", field("comments"))
+            authors_html = re.search(r"<div class=.list-authors.>(.*?)</div>", dd, re.S)
+            authors = [_text(a) for a in re.findall(r"<a[^>]*>(.*?)</a>", authors_html.group(1), re.S)] if authors_html else []
+            cats = re.findall(r"\(([a-zA-Z\-]+(?:\.[a-zA-Z\-]+)?)\)", field("subjects"))
+            abstract = re.search(r"<p class=.mathjax.>(.*?)</p>", dd, re.S)
+            atype = "cross" if section == "new" and "cross-list from" in dt else section
+            out.append(arxiv_item(idm.group(1), title, authors, _text(abstract.group(1)) if abstract else "", cats, date, atype, comment))
+    return out
+
+def arxiv_listing_page(cat, which):
+    page = fetch(f"https://arxiv.org/list/{cat}/{which}?skip=0&show=2000", timeout=40).decode("utf-8", "replace")
+    items = parse_arxiv_listing(page)
+    if not items and "Showing new listings" not in page and "(showing" not in page:
+        raise RuntimeError("the listing page did not look like one")
+    return items
+
+def arxiv_fill_abstracts(items):
+    """Abstracts and comments for items the pastweek page listed without them, by id list from the API."""
+    want = [it for it in items if not it["desc"]]
+    for k in range(0, len(want), 200):
+        batch = want[k:k + 200]
+        got = {p["id"]: p for p in arxiv_api(id_list=",".join(it["id"] for it in batch), max_results=len(batch))}
+        for it in batch:
+            p = got.get(it["id"])
+            if p:
+                it.update({"desc": p["desc"], "comment": p.get("comment") or it["comment"], "authors": p["authors"] or it["authors"],
+                           "author": p["author"] or it["author"]})
+
+def fetch_arxiv_listing(sub):
+    """A category subscription reads the official daily announcement: rss.arxiv.org/rss/<cat>, and when that is
+    empty (weekends, holidays) or fails, the arxiv.org/list/<cat>/new page, which shows the last listing. The first
+    time a category is read this way, the previous week's listings are taken from /list/<cat>/pastweek so the
+    papers view has more than one day to show. A paper you already saw as new and that arXiv re-announces as a
+    replacement keeps its place and date; the replacement is noted on it instead."""
+    cat = arxiv_cat_of(sub)
+    items, err = [], None
+    try:
+        items = parse_arxiv_rss(fetch(f"https://rss.arxiv.org/rss/{cat}", timeout=40, headers=FEED_ACCEPT))
+    except Exception as ex:
+        err = ex
+    if not items:
+        try:
+            items = arxiv_listing_page(cat, "new")
+        except Exception as ex:
+            raise RuntimeError(f"the daily feed {'failed (' + str(err) + ')' if err else 'is empty'} and the listing page could not be read: {ex}") from ex
+    with LOCK:
+        known = {it["id"]: it for it in STATE["items"] if it["kind"] == "arxiv" and it.get("cid") == sub["id"]}
+    if not any(it.get("announce_date") for it in known.values()):
+        try:
+            seen = {it["id"] for it in items}
+            week = [it for it in arxiv_listing_page(cat, "pastweek") if it["id"] not in seen]
+            arxiv_fill_abstracts(week)
+            items += week
+        except Exception as ex:
+            log(f"arXiv {cat}: could not read last week's listings: {ex}")
+    out = {}
+    for it in items:
+        it["cid"] = sub["id"]
+        cur = out.get(it["id"]) or known.get(it["id"])
+        if cur and cur.get("announce_type") in ANNOUNCE_RANK and ANNOUNCE_RANK[cur["announce_type"]] <= ANNOUNCE_RANK[it["announce_type"]]:
+            keep = dict(cur, **{k: it[k] for k in ("title", "authors", "author", "desc", "cats", "primary", "comment", "ver") if it.get(k)})
+            if it["announce_type"] == "replace" and cur["announce_type"] != "replace":
+                keep["replaced"] = it["announce_date"]
+            out[it["id"]] = keep
+        else:
+            out[it["id"]] = it
+    return list(out.values())
+
 def fetch_arxiv(sub):
+    if sub["id"].startswith("cat:"):
+        return fetch_arxiv_listing(sub)
     items = arxiv_api(sub["id"], max_results=int(CONFIG["arxiv"].get("max_results", 50)))
     for it in items:
         it["cid"] = sub["id"]
+        it["announce_date"] = announce_day_for(it["ts"])  # so "today's listing" can include what an author or keyword watch brought
     return items
+
+# ---- INSPIRE-HEP: citation counts, journals, who cites a paper and what it cites. Covers high-energy physics
+# and its neighbours; a paper outside that is simply unknown to it, and the by-line stays as it is.
+
+INSPIRE_FIELDS = ("titles.title,authors.full_name,arxiv_eprints.value,citation_count,publication_info.journal_title,"
+                  "publication_info.journal_volume,publication_info.year,earliest_date,control_number")
+INSPIRE_TTL = 86400
+
+def inspire_query(q, sort="mostrecent", size=25):
+    url = "https://inspirehep.net/api/literature?" + urlencode({"q": q, "sort": sort, "size": size, "fields": INSPIRE_FIELDS})
+    hits = json.loads(fetch(url, timeout=30, headers={"Accept": "application/json"}))["hits"]
+    return hits["total"], [h["metadata"] for h in hits["hits"]]
+
+def inspire_paper(m):
+    ep = (m.get("arxiv_eprints") or [{}])[0].get("value")
+    authors = []
+    for a in m.get("authors") or []:
+        last, _, first = (a.get("full_name") or "").partition(", ")
+        authors.append(f"{first} {last}".strip())
+    pub = next((p for p in m.get("publication_info") or [] if p.get("journal_title")), {})
+    journal = " ".join(str(pub[k]) for k in ("journal_title", "journal_volume") if pub.get(k))
+    year = pub.get("year") or str(m.get("earliest_date") or "")[:4]
+    recid = m.get("control_number")
+    return {"id": ep, "recid": recid, "title": " ".join(((m.get("titles") or [{}])[0].get("title") or "").split()),
+            "authors": authors, "year": int(year) if str(year).isdigit() else None, "journal": journal,
+            "cites": int(m.get("citation_count") or 0), "link": f"https://inspirehep.net/literature/{recid}"}
+
+def inspire_info(ids):
+    """What INSPIRE knows about these arXiv ids: citation count, journal, year, record number. Cached a day; an id
+    INSPIRE has not seen is remembered as such for half a day, so a listing of papers outside its field costs one
+    lookup, not one per visit. Several ids go in one query."""
+    now = time.time()
+    out, ask = {}, []
+    with LOCK:
+        for i in ids:
+            c = CACHE["inspire"].get(i)
+            if c and now - c.get("at", 0) < (INSPIRE_TTL if c.get("found") else INSPIRE_TTL / 2):
+                out[i] = c
+            else:
+                ask.append(i)
+    for k in range(0, len(ask), 20):
+        batch = ask[k:k + 20]
+        found = {}
+        for m in inspire_query(" or ".join(f"arxiv:{i}" for i in batch), size=len(batch) + 5)[1]:
+            p = inspire_paper(m)
+            if p["id"] in batch:
+                found[p["id"]] = p
+        for i in batch:
+            p = found.get(i)
+            rec = {"at": now, "found": bool(p), **({"cites": p["cites"], "journal": p["journal"], "year": p["year"], "recid": p["recid"]} if p else {})}
+            cache_put("inspire", i, rec)
+            out[i] = rec
+    if ask:
+        save_cache()
+    return {i: {k: v for k, v in r.items() if k != "at"} for i, r in out.items()}
+
+def inspire_related(aid, rel):
+    """The papers citing this one (rel 'citedby': INSPIRE's refersto) or the ones it cites (its references, INSPIRE's
+    citedby), newest first, with title, authors, year, journal and citation count. Both go by the record number the
+    lookup gave us: refersto:arxiv:<id> misreads old-style ids with a slash in them."""
+    info = inspire_info([aid]).get(aid) or {}
+    if not info.get("found"):
+        raise RuntimeError("INSPIRE does not have this paper: it covers high-energy physics and nearby fields, and takes a few days to notice a new one")
+    q = f"{'refersto' if rel == 'citedby' else 'citedby'}:recid:{info['recid']}"
+    total, metas = inspire_query(q, "mostrecent", 100)
+    return {"id": aid, "rel": rel, "total": total, "papers": [inspire_paper(m) for m in metas]}
 
 # ---------------------------------------------------------------- refresh loop
 
@@ -1498,6 +1730,8 @@ def visible_items():
                     p = papers[it["id"]]
                     p["tags"] = sorted(set(p["tags"]) | set(sub.get("tags", [])))
                     p["via"] = sorted(set(p["via"]) | {sub.get("name") or sub["id"]})
+                    if ANNOUNCE_RANK.get(it.get("announce_type"), 3) < ANNOUNCE_RANK.get(p.get("announce_type"), 3):  # new in one category, a cross-list in another: it is new to you
+                        p.update({k: it[k] for k in ("announce_type", "announce_date", "ts", "replaced") if k in it})
                     continue
                 papers[it["id"]] = {**it, "tags": list(sub.get("tags", [])), "via": [sub.get("name") or sub["id"]]}
                 out.append(papers[it["id"]])
@@ -1506,7 +1740,10 @@ def visible_items():
                 continue
             per[(it["kind"], it["cid"])] += 1
             out.append({**it, "tags": sub.get("tags", []), "author": sub.get("name") or it["author"]})
-        return out[: int(CONFIG.get("max_items", 400))]
+        cap = int(CONFIG.get("max_items", 400))  # a big category announces hundreds of papers a day: they get their own cap
+        rest, pap = [it for it in out if it["kind"] != "arxiv"][:cap], [it for it in out if it["kind"] == "arxiv"][:max(cap, 2000)]
+        keep = {id(it) for it in rest} | {id(it) for it in pap}
+        return [it for it in out if id(it) in keep]
 
 def settings_payload():
     z = CONFIG.get("zulip") or {}
@@ -1530,6 +1767,7 @@ def items_payload():
                 "saved_items": [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)],
                 "tags": tags, "counts": {k: len(sub_list(k)) for k in KINDS},
                 "arxiv_authors": [s["name"] for s in sub_list("arxiv") if s.get("qtype") == "author"],
+                "arxiv_keywords": [s["name"] for s in sub_list("arxiv") if s.get("qtype") == "search"],
                 "inbox": inbox_list(),
                 "followed": {k: [s.get("id") for s in sub_list(k)] for k in KINDS},
                 "discussions": discussions_payload(),
@@ -3304,6 +3542,11 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/arxiv/search":
                 g = lambda k: q.get(k, [""])[0]
                 return self._send(arxiv_search(g("q"), g("author"), g("from"), g("to"), g("sort") or "submittedDate"))
+            if p.path == "/api/inspire/related":
+                aid = q.get("id", [""])[0].strip()
+                if not re.fullmatch(r"[\w.\-/]+", aid):
+                    return self._send({"error": "not an arXiv id"}, code=400)
+                return self._send(inspire_related(aid, "citedby" if q.get("rel", [""])[0] == "citedby" else "references"))
             if p.path == "/oauth/google":  # Google sends the browser back here after consent
                 if q.get("error"):
                     return self._send(OAUTH_DONE_PAGE % ("Google said: " + html.escape(q["error"][0]), RUN_PORT))
@@ -3383,6 +3626,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"ok": True})
             if p.path == "/api/settings":
                 return self._send(update_settings(body))
+            if p.path == "/api/inspire":  # citation count and journal for the papers on screen, several ids at once
+                ids = [str(i) for i in (body.get("ids") or []) if re.fullmatch(r"[\w.\-/]+", str(i))][:150]
+                return self._send(inspire_info(ids))
             if p.path == "/api/zulip/test":
                 return self._send(zulip_test())
             if p.path == "/api/zulip/apply_setup":

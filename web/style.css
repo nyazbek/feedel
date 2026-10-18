@@ -86,6 +86,13 @@ input#libsearch{flex:0 1 220px;border-radius:var(--pill)}
 @media(max-width:560px){.grid2{grid-template-columns:1fr}}
 .offer{padding:16px 0 4px;text-align:center}
 
+.toolbar .chiprow{margin:0 0 2px}
+.toolbar .sep{width:1px;height:16px;background:var(--line2)}
+.help .keys{display:grid;grid-template-columns:auto 1fr;gap:4px 18px;margin:0;font-size:14px}
+.help .keys dt{color:var(--fg);font:13px ui-monospace,Menlo,Consolas,monospace;padding-top:2px}
+.help .keys dd{margin:0;color:var(--mut)}
+mark{background:var(--accbg);color:inherit;border-radius:3px;padding:0 1px}
+
 /* ---- the list */
 .day{color:var(--faint);font-size:11.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin:30px 0 6px;padding:0 12px}
 .day:first-child{margin-top:6px}
@@ -94,6 +101,7 @@ article:hover{background:var(--card);border-color:var(--line)}
 article.tw,article.rss,article.arxiv,article.nothumb,article.digest{grid-template-columns:1fr}
 article.tw.withthumb{grid-template-columns:128px 1fr}
 article.seen{opacity:.45}
+article.cur{background:var(--card);border-color:var(--line2);box-shadow:inset 3px 0 0 var(--acc)}
 article img{width:128px;aspect-ratio:16/9;object-fit:cover;background:var(--soft);border-radius:var(--r2);border:1px solid var(--line)}
 .t{font:600 17px/1.35 var(--serif);margin:0 0 4px}
 .t a{color:inherit}
@@ -116,6 +124,17 @@ button.more{font-size:13px;color:var(--acc);margin-top:2px}
 .authors button.me{color:var(--acc)}
 .cats{font-size:12px;color:var(--faint);margin-left:6px}
 .cats .p{color:var(--mut)}
+.by .kw{color:var(--faint);margin-left:6px;font-size:12.5px}
+.by .kw::before{content:"matches ";}
+.by .atype{color:var(--faint)}
+.by .insp{color:var(--mut)}
+.inspbox{margin-top:10px;padding:12px 14px;background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+.inspbox .thhead{margin:0 0 4px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.inspbox .insp{padding:8px 0;border-bottom:1px solid var(--line)}
+.inspbox .insp:last-child{border-bottom:none}
+.inspbox .t2{font:500 15px/1.4 var(--serif)}
+.inspbox .t2 a{color:inherit}
+.inspbox .meta a{color:var(--acc)}
 .acts{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px 6px}
 .acts button,.acts a{font-size:13px;color:var(--mut);padding:3px 9px;border-radius:var(--pill);border:1px solid transparent}
 .acts button:hover,.acts a:hover{border-color:var(--line2);color:var(--fg);text-decoration:none;background:var(--card)}

@@ -5,6 +5,11 @@ const KIND_LABEL = { yt: 'videos', tw: 'tweets', rss: 'posts', arxiv: 'papers' }
 const KIND_ONE = { yt: 'channel', tw: 'account', rss: 'feed', arxiv: 'query' };
 
 let view = 'feed', kindFilter = 'all', tagFilter = null, paperWindow = 1, axResults = null, feedQuery = '', ytResults = null;
+let paperTypes = { new: true, cross: true, replace: false };  // what arXiv announced; replacements are off until asked for
+const ANNOUNCE_RANK = { new: 0, cross: 1, replace: 2 };
+let kwre = null;  // the keyword watches, as one regex, rebuilt at each render
+let curId = null, curIndex = -1;  // the item the keyboard is on
+const SNAP_KEYS = ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment', 'announce_date', 'announce_type', 'replaced'];
 let libKind = 'all', libTag = null;
 let data = null, subs = null;
 let loadSig = '', refreshPoll = null, refreshPolls = 0;  // while the server is refreshing, the feed is re-read every 3 s
@@ -42,6 +47,22 @@ function dayLabel(ts) {
 }
 function dur(s) { if (s == null) return ''; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} h ${m} min` : m ? `${m} min` : `${Math.round(s)} s`; }
 function dateStr(ts) { return new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }); }
+function isoDay(ts) { const d = new Date(ts * 1000); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function listDay(i) { return i.announce_date || isoDay(i.ts); }  // the arXiv listing a paper belongs to (its own day for papers from the API)
+function listingLabel(day) { const [y, m, d] = day.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }); }
+
+/* keyword watches: their words are highlighted inside titles and abstracts, and papers that match come first within their day */
+function kwRegex() {
+  const k = (data && data.arxiv_keywords || []).map(x => x.trim()).filter(Boolean);
+  return k.length ? new RegExp('(' + k.map(x => esc(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi') : null;
+}
+function hl(s) { const t = esc(s); return kwre ? t.replace(kwre, '<mark>$1</mark>') : t; }
+function kwHits(i) {
+  if (!kwre || i.kind !== 'arxiv') return [];
+  const found = new Set(); let m; const t = esc((i.title || '') + ' ' + (i.desc || '')); kwre.lastIndex = 0;
+  while ((m = kwre.exec(t))) found.add(m[1].toLowerCase());
+  return [...found];
+}
 
 function calm(title) {
   if (!data?.settings?.calm_titles) return title;
@@ -118,6 +139,7 @@ function migrateLocalSeen() {
 
 function render() {
   captureDrafts();
+  kwre = kwRegex();
   document.querySelectorAll('.views button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
   ['feed', 'talk', 'library', 'following', 'source', 'friends'].forEach(v => $('#view-' + v).hidden = v !== view);
   if (!data) return;
@@ -128,6 +150,9 @@ function render() {
   else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
   restoreThreads();
+  restoreInspire();
+  restoreCur();
+  fillInspire();
 }
 
 /* ------------------------------------------------------------ discussions (Zulip as the backend) */
@@ -437,6 +462,7 @@ function renderFeed() {
   const papers = kindFilter === 'arxiv';
   $('#papers').hidden = !papers;
   document.querySelectorAll('#windows button').forEach(b => b.classList.toggle('on', +b.dataset.w === paperWindow));
+  document.querySelectorAll('#ptypes button').forEach(b => b.classList.toggle('on', !!paperTypes[b.dataset.pt]));
   $('#ax_clear').hidden = !axResults;
   const L = $('#list');
   if (papers && axResults) {
@@ -450,13 +476,21 @@ function renderFeed() {
   }
   const q = feedQuery.toLowerCase();
   const hit = i => !q || [i.title, i.author, i.desc, ...(i.authors || []), ...(i.tags || [])].some(x => (x || '').toLowerCase().includes(q));
-  let items = data.items.filter(i => (kindFilter === 'all' || i.kind === kindFilter) && (!tagFilter || i.tags.includes(tagFilter)) && !(s.hide_seen && seen.has(i.id)) && hit(i));
-  if (papers && paperWindow) {
-    // arXiv dates a paper by submission and lists it a day or two later, so "latest" means the newest batch
-    // (within a day of the newest paper you have), and the longer windows count back from now.
-    const newest = Math.max(0, ...items.map(i => i.ts));
-    const cut = paperWindow === 1 ? newest - 86400 : Date.now() / 1000 - paperWindow * 86400;
+  let items = data.items.filter(i => (kindFilter === 'all' || i.kind === kindFilter) && (!tagFilter || i.tags.includes(tagFilter)) && !(s.hide_seen && seen.has(i.id)) && hit(i)
+    && (i.kind !== 'arxiv' || !i.announce_type || paperTypes[i.announce_type]));
+  let listing = null;
+  if (papers && paperWindow === 1) {
+    // "today's listing": the most recent announcement day among the papers you have (Friday's on a weekend).
+    // A paper from an author or keyword watch is placed on the listing its submission time implies.
+    listing = items.reduce((m, i) => listDay(i) > m ? listDay(i) : m, '');
+    items = items.filter(i => listDay(i) === listing);
+  } else if (papers && paperWindow) {
+    const cut = Date.now() / 1000 - paperWindow * 86400;
     items = items.filter(i => i.ts >= cut);
+  }
+  if (papers) {  // within a day: papers matching a keyword watch first, then as arXiv lists them (new, cross-lists, replacements); chronological otherwise
+    items = items.map((i, n) => ({ i, n, d: listDay(i), kw: kwHits(i).length ? 0 : 1, r: ANNOUNCE_RANK[i.announce_type] ?? 0 }))
+      .sort((a, b) => a.d !== b.d ? (a.d > b.d ? -1 : 1) : (a.kw - b.kw || a.r - b.r || a.n - b.n)).map(x => x.i);
   }
   const ytOffer = q && (kindFilter === 'all' || kindFilter === 'yt') ? `<div class="offer meta">not in what you follow? <button class="link" data-a="yt-search">search YouTube for “${esc(feedQuery)}”</button></div>` : '';
   if (!items.length) {
@@ -467,8 +501,8 @@ function renderFeed() {
   let html = '', day = null, dayPapers = [];
   const flushPapers = () => { if (dayPapers.length) { html += digest(dayPapers); dayPapers = []; } };
   for (const i of items) {
-    const d = dayLabel(i.ts);
-    if (d !== day) { flushPapers(); html += `<div class="day">${esc(d)}</div>`; day = d; }
+    const d = papers ? listingLabel(listDay(i)) : dayLabel(i.ts);
+    if (d !== day) { flushPapers(); html += `<div class="day">${papers ? 'listing of ' : ''}${esc(d)}</div>`; day = d; }
     if (kindFilter === 'all' && i.kind === 'arxiv') { dayPapers.push(i); continue; }  // papers fold into one calm line per day in "all"
     html += article(i);
   }
@@ -570,13 +604,17 @@ function article(i) {
     const mine = new Set((data.arxiv_authors || []).map(a => a.toLowerCase()));
     const authors = (i.authors || []).map(a => `<button data-author="${esc(a)}" class="${mine.has(a.toLowerCase()) ? 'me' : ''}">${esc(a)}</button>`).join(', ');
     const cats = `<span class="cats"><span class="p">${esc(i.primary)}</span>${(i.cats || []).filter(c => c !== i.primary).slice(0, 3).map(c => ' ' + esc(c)).join('')}</span>`;
+    const atype = i.announce_type === 'cross' ? ' · <span class="atype">cross-list</span>' : i.announce_type === 'replace' ? ' · <span class="atype">replacement</span>' : '';
+    const replaced = i.replaced ? ` · <span class="atype">replaced ${esc(listingLabel(i.replaced))}</span>` : i.updated && i.updated - i.ts > 86400 ? ' · updated ' + dateStr(i.updated) : '';
+    const kw = kwHits(i);
+    const insp = inspireCache[i.id];
     return `<article class="${cls}" data-id="${esc(i.id)}"><div>
-      <p class="t"><a href="${esc(i.link)}" target="_blank" rel="noopener">${esc(i.title)}</a></p>
+      <p class="t"><a href="${esc(i.link)}" target="_blank" rel="noopener">${hl(i.title)}</a></p>
       <div class="authors">${authors}</div>
-      <div class="by">${dateStr(i.ts)}${i.updated && i.updated - i.ts > 86400 ? ' · updated ' + dateStr(i.updated) : ''}${cats}${tags}${i.comment ? ` · <span class="cats">${esc(i.comment)}</span>` : ''}</div>
-      <div class="abs" hidden>${esc(i.desc)}</div>
+      <div class="by">${dateStr(i.ts)}${atype}${replaced}${cats}${tags}${i.comment ? ` · <span class="cats">${esc(i.comment)}</span>` : ''}<span class="insp" data-insp="${esc(i.id)}">${insp ? inspLine(insp) : ''}</span>${kw.length ? `<span class="kw">${esc(kw.join(', '))}</span>` : ''}</div>
+      <div class="abs" hidden>${i.desc ? hl(i.desc) : '<span class="meta">no abstract was fetched for this one; abs ↗ has it</span>'}</div>
       <div class="menu" hidden></div>
-      <div class="acts"><button data-a="abs">abstract</button><a href="${esc(i.link)}" target="_blank" rel="noopener">abs ↗</a><a href="${esc(i.pdf)}" target="_blank" rel="noopener">pdf ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
+      <div class="acts"><button data-a="abs">abstract</button><a href="${esc(i.link)}" target="_blank" rel="noopener">abs ↗</a><a href="${esc(i.pdf)}" target="_blank" rel="noopener">pdf ↗</a>${saveBtn}${seenBtn}<button data-a="citedby" class="sec">cited by</button><button data-a="refs" class="sec">references</button></div>${discLine(i)}</div></article>`;
   }
   return '';
 }
@@ -587,7 +625,7 @@ async function setMark(id, field, on) {
   on ? set.add(id) : set.delete(id);
   if (field === 'saved') { if (on && item) savedItems[id] = { ...item, saved_at: Date.now() / 1000 }; else delete savedItems[id]; }
   render();
-  const snap = item && Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k)));
+  const snap = item && snapshot(item);
   try { await api('/api/mark', { id, field, on, item: snap }); }
   catch (e) { toast('could not save: ' + e.message); }
 }
@@ -596,7 +634,7 @@ async function setMark(id, field, on) {
 
 function itemLink(i) { return i.kind === 'yt' ? 'https://www.youtube.com/watch?v=' + i.id : (i.link || i.id); }
 function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || (ytResults || []).find(i => i.id === id) || (data.inbox || []).find(i => i.id === id) || ((data.recs && data.recs.cards) || []).map(c => c.item).find(i => i.id === id) || savedItems[id]; }
-function snapshot(item) { return Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k))); }
+function snapshot(item) { return Object.fromEntries(Object.entries(item).filter(([k]) => SNAP_KEYS.includes(k))); }
 
 function openShare(art) {
   const old = art.querySelector('.share'); if (old) { old.remove(); return; }
@@ -664,6 +702,76 @@ async function openTwThread(art) {
     box.innerHTML = `<div class="row thhead"><span class="meta">thread</span><span class="grow"></span><button class="link" data-a="twthread-close">close</button></div>` + parts.join('');
   } catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
 }
+
+/* ------------------------------------------------------------ INSPIRE-HEP: citations and references of a paper */
+
+// what INSPIRE knows about the papers on screen, by arXiv id, asked for in one request per render and kept for the session
+const inspireCache = {}, inspirePending = new Set(), inspireOpen = new Map();  // id → {rel, html} for the boxes left open across re-renders
+function inspLine(c) {
+  if (!c || !c.found) return '';
+  const parts = [];
+  if (c.journal) parts.push(esc(c.journal) + (c.year ? ' (' + c.year + ')' : ''));
+  if (c.cites) parts.push(c.cites === 1 ? '1 citation' : `${c.cites} citations`);
+  return parts.length ? ' · ' + parts.join(' · ') : '';
+}
+async function fillInspire() {
+  const els = [...document.querySelectorAll('section:not([hidden]) article [data-insp]')];
+  els.forEach(e => { const c = inspireCache[e.dataset.insp]; if (c) e.innerHTML = inspLine(c); });
+  const ids = [...new Set(els.map(e => e.dataset.insp))].filter(id => !(id in inspireCache) && !inspirePending.has(id)).slice(0, 150);
+  if (!ids.length) return;
+  ids.forEach(id => inspirePending.add(id));
+  try {
+    Object.assign(inspireCache, await api('/api/inspire', { ids }));
+    document.querySelectorAll('[data-insp]').forEach(e => { const c = inspireCache[e.dataset.insp]; if (c) e.innerHTML = inspLine(c); });
+  } catch (e) { /* INSPIRE unreachable: the by-lines simply stay as they are */ }
+  finally { ids.forEach(id => inspirePending.delete(id)); }
+}
+function inspList(r) {
+  const n = r.papers.length;
+  const head = `<div class="row thhead"><span class="meta">${r.rel === 'citedby' ? 'cited by' : 'references'} · ${r.total} on INSPIRE${n < r.total ? `, the newest ${n} shown` : ''}</span><span class="grow"></span><button class="link" data-a="insp-close">close</button></div>`;
+  if (!n) return head + `<div class="meta">${r.rel === 'citedby' ? 'nothing cites it yet' : 'INSPIRE has no reference list for it'}</div>`;
+  return head + r.papers.map(p => `<div class="insp"><div class="t2"><a href="${esc(p.link)}" target="_blank" rel="noopener">${esc(p.title)}</a></div>
+    <div class="meta">${esc(p.authors.slice(0, 3).join(', '))}${p.authors.length > 3 ? ' et al.' : ''}${p.year ? ' · ' + p.year : ''}${p.journal ? ' · ' + esc(p.journal) : ''}${p.cites ? ' · ' + p.cites + (p.cites === 1 ? ' citation' : ' citations') : ''}${p.id ? ` · <a href="https://arxiv.org/abs/${esc(p.id)}" target="_blank" rel="noopener">open on arXiv ↗</a>` : ''}</div></div>`).join('');
+}
+async function openInspire(art, rel) {
+  const id = art.dataset.id, old = art.querySelector('.inspbox');
+  if (old && old.dataset.rel === rel) { old.remove(); inspireOpen.delete(id); return; }
+  if (old) old.remove();
+  const box = document.createElement('div'); box.className = 'inspbox'; box.dataset.rel = rel; box.innerHTML = '<span class="meta">asking INSPIRE…</span>';
+  art.querySelector('.acts').after(box);
+  try { box.innerHTML = inspList(await api('/api/inspire/related?' + new URLSearchParams({ id, rel }))); inspireOpen.set(id, { rel, html: box.innerHTML }); }
+  catch (e) { box.innerHTML = `<div class="row thhead"><span class="warn">${esc(e.message)}</span><span class="grow"></span><button class="link" data-a="insp-close">close</button></div>`; }
+}
+function restoreInspire() {
+  for (const [id, o] of inspireOpen) {
+    const art = shownArticles().find(a => a.dataset.id === id);
+    if (art && !art.querySelector('.inspbox')) { const box = document.createElement('div'); box.className = 'inspbox'; box.dataset.rel = o.rel; box.innerHTML = o.html; art.querySelector('.acts').after(box); }
+  }
+}
+
+/* ------------------------------------------------------------ keyboard: j/k move a highlight, the rest acts on it */
+
+function listRoot() { return view === 'feed' ? $('#list') : view === 'library' ? $('#liblist') : view === 'source' ? $('#srclist') : null; }
+function shownArticles() { const r = listRoot(); return r ? [...r.querySelectorAll('article[data-id]')] : []; }
+function curArticle() { return curId ? shownArticles().find(a => a.dataset.id === curId) || null : null; }
+function setCur(art) {
+  document.querySelectorAll('article.cur').forEach(a => a.classList.remove('cur'));
+  curId = art ? art.dataset.id : null; curIndex = art ? shownArticles().indexOf(art) : -1;
+  if (art) { art.classList.add('cur'); art.scrollIntoView({ block: 'nearest' }); }
+}
+function moveCur(d) {
+  const arts = shownArticles(); if (!arts.length) return;
+  let n = arts.findIndex(a => a.dataset.id === curId);
+  if (n < 0) n = curIndex >= 0 ? Math.min(curIndex, arts.length - 1) - (d > 0 ? 1 : 0) : (d > 0 ? -1 : arts.length);  // the item went away (marked seen and hidden): carry on from its place
+  setCur(arts[Math.max(0, Math.min(arts.length - 1, n + d))]);
+}
+function restoreCur() {  // after a re-render: the same item, or the one now at its place
+  if (!curId) return;
+  const art = curArticle();
+  if (art) art.classList.add('cur');
+}
+function searchField() { return view === 'feed' ? $('#feedsearch') : view === 'library' ? $('#libsearch') : view === 'talk' ? $('#talkq') : view === 'following' ? $('#subfilter') : null; }
+function toggleHelp(on) { const h = $('#help'); h.hidden = on === undefined ? !h.hidden : !on; if (!h.hidden) window.scrollTo(0, 0); }
 
 /* ------------------------------------------------------------ arXiv search */
 
@@ -1013,6 +1121,8 @@ document.addEventListener('click', async e => {
   if (b.dataset.libf) { libKind = b.dataset.libf; render(); return; }
   if (b.dataset.libtag !== undefined) { libTag = libTag === b.dataset.libtag ? null : b.dataset.libtag; render(); return; }
   if (b.dataset.w !== undefined) { paperWindow = +b.dataset.w; axResults = null; render(); return; }
+  if (b.dataset.pt !== undefined) { paperTypes[b.dataset.pt] = !paperTypes[b.dataset.pt]; render(); return; }
+  if (b.id === 'helpbtn') { toggleHelp(); return; }
   if (b.id === 'ax_clear') { axResults = null; render(); return; }
   if (b.id === 'theme') { cycleTheme(); return; }
   if (b.id === 'restart') { restartServer(); return; }
@@ -1076,6 +1186,8 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'share-cancel') { art.querySelector('.share')?.remove(); return; }
   if (b.dataset.a === 'share-settings') { $('#settings').hidden = false; fillSettings(); window.scrollTo(0, 0); return; }
   if (b.dataset.a === 'abs') { const a = art.querySelector('.abs'); a.hidden = !a.hidden; b.textContent = a.hidden ? 'abstract' : 'hide abstract'; return; }
+  if (b.dataset.a === 'citedby' || b.dataset.a === 'refs') { openInspire(art, b.dataset.a === 'refs' ? 'references' : 'citedby'); return; }
+  if (b.dataset.a === 'insp-close') { art.querySelector('.inspbox')?.remove(); inspireOpen.delete(id); return; }
   if (b.dataset.a === 'more') { const t = art.querySelector('.tweet, .desc'); t.classList.toggle('open'); b.textContent = t.classList.contains('open') ? 'less' : 'more'; return; }
   if (b.dataset.a === 'copy') { const it = findItem(id), link = itemLink(it); try { await navigator.clipboard.writeText(link); toast('link copied'); } catch (err) { toast(link, 6000); } return; }
   if (b.dataset.author !== undefined) {
@@ -1137,8 +1249,33 @@ drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add(
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); importFiles(e.dataTransfer.files); });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { $('#settings').hidden = true; if (document.activeElement === $('#feedsearch')) { $('#feedsearch').value = ''; feedQuery = ''; ytResults = null; render(); } }
-  if (e.key === 'Enter' && document.activeElement === $('#feedsearch') && feedQuery && (kindFilter === 'all' || kindFilter === 'yt') && !document.querySelector('#list article')) searchYouTube();
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const inField = e.target.matches && e.target.matches('input, select, textarea, [contenteditable]');
+  if (e.key === 'Escape') {
+    $('#settings').hidden = true; toggleHelp(false);
+    if (inField) { if (e.target === $('#feedsearch')) { $('#feedsearch').value = ''; feedQuery = ''; ytResults = null; render(); } e.target.blur(); }
+    else setCur(null);
+    return;
+  }
+  if (inField) {
+    if (e.key === 'Enter' && e.target === $('#feedsearch') && feedQuery && (kindFilter === 'all' || kindFilter === 'yt') && !document.querySelector('#list article')) searchYouTube();
+    return;
+  }
+  const k = e.key;
+  if (k === '?') { toggleHelp(); e.preventDefault(); return; }
+  if (k === '/') { const f = searchField(); if (f) { f.focus(); f.select(); e.preventDefault(); } return; }
+  if (k === 'j' || k === 'k') { moveCur(k === 'j' ? 1 : -1); e.preventDefault(); return; }
+  const art = curArticle(); if (!art) return;
+  const id = art.dataset.id, link = sel => { const l = art.querySelector(sel); if (l) window.open(l.href, '_blank', 'noopener'); };
+  if (k === 'o' || k === 'Enter') (art.querySelector('[data-a=abs]') || art.querySelector('.acts button, .acts a'))?.click();  // a paper's abstract; otherwise the item's first action
+  else if (k === 's' && id !== 'digest') setMark(id, 'saved', !saved.has(id));
+  else if (k === 'm' && id !== 'digest') setMark(id, 'seen', !seen.has(id));
+  else if (k === 'a') link('.acts a[href*="/abs/"], .acts a[href]');
+  else if (k === 'p') link('.acts a[href*="/pdf/"]');
+  else if (k === 'c') art.querySelector('[data-a=citedby]')?.click();
+  else if (k === 'r') art.querySelector('[data-a=refs]')?.click();
+  else return;
+  e.preventDefault();
 });
 
 let theme = null; try { theme = localStorage.getItem('theme'); } catch (e) { /* ignore */ }
