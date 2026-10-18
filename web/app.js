@@ -1,4 +1,4 @@
-/* quietfeed front-end. Talks only to localhost; every YouTube image is proxied by the server. */
+/* feedel front-end. Talks only to localhost; every YouTube image is proxied by the server. */
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const KIND_LABEL = { yt: 'videos', tw: 'tweets', rss: 'posts', arxiv: 'papers' };
@@ -17,7 +17,11 @@ async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const ct = r.headers.get('content-type') || '';
   const out = ct.includes('json') ? await r.json() : await r.text();
-  if (!r.ok) throw new Error((out && out.error) || out || r.statusText);
+  if (!r.ok) {
+    // a route this page knows but the server does not: the server is older than the page
+    if ((r.status === 404 || (r.status === 400 && out === 'bad request')) && path.startsWith('/api/')) { const n = $('#stale'); if (n) n.hidden = false; throw new Error('this copy of feedel is older than the page — restart it (notice at the top)'); }
+    throw new Error((out && out.error) || out || r.statusText);
+  }
   return out;
 }
 
@@ -79,6 +83,7 @@ async function load(onlyIfChanged = false) {
   saved.clear(); data.saved.forEach(i => saved.add(i));
   savedItems = {}; (data.saved_items || []).forEach(i => { savedItems[i.id] = i; });
   $('#authors').innerHTML = (data.arxiv_authors || []).map(a => `<option value="${esc(a)}">`).join('');
+  $('#stale').hidden = !data.stale;
   migrateLocalSeen();
   render();
 }
@@ -90,6 +95,16 @@ function pollWhileRefreshing(refreshing) {
   if (!refreshing) { refreshPolls = 0; return; }
   if (refreshPolls++ > 200) return;  // ten minutes: fall back to the minute timer
   refreshPoll = setTimeout(() => load(true), 3000);
+}
+
+async function restartServer() {
+  const st = $('#restart-status'); st.textContent = 'restarting…';
+  try { await api('/api/restart', {}); } catch (e) { /* the old process is gone before it can answer cleanly */ }
+  const t0 = Date.now();
+  const poll = setInterval(async () => {
+    try { const r = await fetch('/api/items', { cache: 'no-store' }); if (r.ok) { clearInterval(poll); location.reload(); } }
+    catch (e) { if (Date.now() - t0 > 30000) { clearInterval(poll); st.textContent = 'it did not come back; start it by hand'; } }
+  }, 1000);
 }
 
 function migrateLocalSeen() {
@@ -104,10 +119,11 @@ function migrateLocalSeen() {
 function render() {
   captureDrafts();
   document.querySelectorAll('.views button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  ['feed', 'talk', 'library', 'following', 'source'].forEach(v => $('#view-' + v).hidden = v !== view);
+  ['feed', 'talk', 'library', 'following', 'source', 'friends'].forEach(v => $('#view-' + v).hidden = v !== view);
   if (!data) return;
   if (view === 'feed') renderFeed();
   else if (view === 'talk') renderTalk();
+  else if (view === 'friends') renderFriends();
   else if (view === 'library') renderLibrary();
   else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
@@ -123,7 +139,7 @@ let talkStream = null, talkTopics = {}, talkSearch = null;
 function zulipStreams() { return ((data && data.zulip && data.zulip.streams) || []).map(s => s.name); }
 function curStream() {
   const ss = zulipStreams();
-  if (!talkStream || !ss.includes(talkStream)) talkStream = ss[0] || (data && data.zulip && data.zulip.stream) || 'quietfeed';
+  if (!talkStream || !ss.includes(talkStream)) talkStream = ss[0] || (data && data.zulip && data.zulip.stream) || 'feedel';
   return talkStream;
 }
 
@@ -276,7 +292,7 @@ async function fetchThread(t) {
   return msgs;
 }
 function markRead(t, msgs) {
-  // Zulip's own read flag, so its apps and quietfeed agree on what you have seen; the row's "n new" follows
+  // Zulip's own read flag, so its apps and feedel agree on what you have seen; the row's "n new" follows
   const ids = msgs.filter(m => m.read === false).map(m => m.id);
   if (!ids.length) return;
   msgs.forEach(m => { if (ids.includes(m.id)) m.read = true; });
@@ -285,7 +301,7 @@ function markRead(t, msgs) {
 async function openThread(host, topic, stream) {
   const key = hostKey(host);
   if (threads.has(key)) { closeThread(host); return; }
-  const t = { topic, stream: stream || (data.zulip && data.zulip.stream) || 'quietfeed', msgs: null, draft: '' };
+  const t = { topic, stream: stream || (data.zulip && data.zulip.stream) || 'feedel', msgs: null, draft: '' };
   threads.set(key, t);
   const box = mountThread(host, t);
   discLabel(host, true);
@@ -590,7 +606,7 @@ function openShare(art) {
   if (!z.site || !z.email || !z.api_key_set) {
     box.innerHTML = `<span class="meta">sharing goes to Zulip, and it is not set up yet — </span><button class="link" data-a="share-settings">open settings</button>`;
   } else {
-    const target = (z.streams || {})[it.kind] || z.stream || 'quietfeed';
+    const target = (z.streams || {})[it.kind] || z.stream || 'feedel';
     const options = (z.shown_streams || z.all_streams || [target]).map(s => `<option value="${esc(s)}" ${s === target ? 'selected' : ''}>#${esc(s)}</option>`).join('');
     box.innerHTML = `<textarea rows="3" placeholder="why is this worth their time? (LaTeX works: $…$)" data-share="note"></textarea>
       <input data-share="topic" value="${esc((it.title || '').slice(0, 60))}" placeholder="topic">
@@ -702,10 +718,10 @@ function fillSettings() {
   $('#s_fallback_browser').value = s.fallback_browser || '';
   $('#s_fallback_auto').textContent = s.fallback_browser ? '' : (s.fallback_browser_auto ? 'currently: ' + s.fallback_browser_auto : 'no browser detected');
   const z = s.zulip || {};
-  $('#z_site').value = z.site || ''; $('#z_stream').value = z.stream || 'quietfeed'; $('#z_email').value = z.email || '';
+  $('#z_site').value = z.site || ''; $('#z_stream').value = z.stream || 'feedel'; $('#z_email').value = z.email || '';
   $('#z_extra').value = (z.extra_streams || []).join(', ');
   $('#z_key').value = ''; $('#z_key').placeholder = z.api_key_set ? 'saved — leave empty to keep it' : 'Zulip → settings → account → API key';
-  for (const k of ['yt', 'arxiv', 'rss', 'tw']) { $('#z_s_' + k).value = (z.streams_set || {})[k] || ''; $('#z_s_' + k).placeholder = z.stream || 'quietfeed'; }
+  for (const k of ['yt', 'arxiv', 'rss', 'tw']) { $('#z_s_' + k).value = (z.streams_set || {})[k] || ''; $('#z_s_' + k).placeholder = z.stream || 'feedel'; }
   $('#z_recs').value = z.recs_stream || '';
   $('#z_status').textContent = '';
 }
@@ -847,12 +863,67 @@ async function addOrSearch() {
 /* ------------------------------------------------------------ account sync */
 
 let syncTimer = null;
+/* ------------------------------------------------------------ friends: getting people into the group */
+
+async function renderFriends() {
+  const z = (data && data.settings && data.settings.zulip) || {};
+  const connected = !!(z.site && z.email && z.api_key_set);
+  $('#fr-state').textContent = connected ? `connecting to ${z.site}…` : 'not connected to any group yet. paste a setup code below, or create a group (bottom).';
+  $('#fr-people').innerHTML = '';
+  $('#fr-invitepanel').hidden = !connected;
+  $('#fr-link').value = z.invite || ''; $('#fr-organizer').value = z.organizer || (connected ? z.email : '');
+  $('#fr-subscribe').hidden = !connected; $('#fr-test').hidden = !connected;
+  if (z.site && !connected) { showSteps({ site: z.site, invite: z.invite, organizer: z.organizer, realm: '' }); }
+  if (!connected) return;
+  try {
+    const t = await api('/api/zulip/test', {});
+    $('#fr-state').innerHTML = `connected as <b>${esc(t.name)}</b> (${esc(t.email)}) on <b>${esc(t.realm || z.site)}</b> · streams: ${t.streams.map(s => '#' + esc(s)).join(', ')}`;
+    const people = await api('/api/zulip/people');
+    $('#fr-people').innerHTML = people.length ? `<div class="meta" style="margin-top:8px">here with you:</div><div class="people-grid">${people.map(p => `<span class="pill">${esc(p.name)}</span>`).join('')}</div>` : '<div class="meta" style="margin-top:8px">nobody else here yet — invite someone below.</div>';
+    const c = await api('/api/zulip/setup_code');
+    $('#fr-mycode').value = c.code;
+  } catch (e) { $('#fr-state').innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+}
+function showSteps(d) {
+  $('#fr-steps').hidden = false;
+  $('#fr-realm').textContent = d.realm ? `(${d.realm}, ${d.site})` : `(${d.site})`;
+  const inv = $('#fr-invite'), no = $('#fr-noinvite');
+  if (d.invite) { inv.href = d.invite; inv.hidden = false; no.hidden = true; }
+  else { inv.hidden = true; no.hidden = false; $('#fr-ask').href = d.organizer ? `mailto:${d.organizer}?subject=${encodeURIComponent('feedel: can I join the group?')}` : (d.site + '/accounts/go/'); }
+  $('#fr-keypage').href = (d.site.startsWith('http') ? d.site : 'https://' + d.site) + '/#settings/account-and-privacy';
+}
+async function friendsClick(b) {
+  const st = id => $(id);
+  if (b.id === 'fr-apply') {
+    const code = $('#fr-code').value.trim(); if (!code) return;
+    try { const d = await api('/api/zulip/apply_setup', { code }); toast(`pointed at ${d.realm || d.site}`); await load(); showSteps(d); $('#fr-code').value = ''; }
+    catch (e) { toast(e.message, 5000); }
+  }
+  if (b.id === 'fr-connect') {
+    st('#fr-connect-status').textContent = 'connecting…';
+    try {
+      await api('/api/settings', { zulip: { email: $('#fr-email').value, api_key: $('#fr-key').value } });
+      const t = await api('/api/zulip/test', {});
+      const s = await api('/api/zulip/subscribe', {});
+      st('#fr-connect-status').textContent = `connected as ${t.name}; subscribed to ${s.streams.map(x => '#' + x).join(', ')}`;
+      $('#fr-key').value = ''; await load(); renderFriends();
+    } catch (e) { st('#fr-connect-status').textContent = e.message; }
+  }
+  if (b.id === 'fr-test') { try { const t = await api('/api/zulip/test', {}); toast(`connected as ${t.name} on ${t.realm || t.stream}`); renderFriends(); } catch (e) { toast(e.message, 5000); } }
+  if (b.id === 'fr-subscribe') { try { const s = await api('/api/zulip/subscribe', {}); $('#fr-note').textContent = `subscribed: ${s.subscribed.join(', ') || 'nothing new'}${s.already.length ? ' · already: ' + s.already.join(', ') : ''}${s.unauthorized.length ? ' · not allowed: ' + s.unauthorized.join(', ') : ''}`; } catch (e) { $('#fr-note').textContent = e.message; } }
+  if (b.id === 'fr-mklink') { st('#fr-invite-status').textContent = 'asking Zulip for a link…'; try { const r = await api('/api/zulip/invite/link', {}); $('#fr-link').value = r.invite; st('#fr-invite-status').textContent = 'invitation link created' + (r.missing_streams.length ? ` (streams not on the Zulip yet: ${r.missing_streams.join(', ')})` : ''); const c = await api('/api/zulip/setup_code'); $('#fr-mycode').value = c.code; } catch (e) { st('#fr-invite-status').textContent = e.message; } }
+  if (b.id === 'fr-sendmail') { st('#fr-invite-status').textContent = 'sending…'; try { const r = await api('/api/zulip/invite/email', { emails: $('#fr-emails').value }); st('#fr-invite-status').textContent = `Zulip e-mailed invitations to ${r.sent.join(', ')}. send them the setup code too.`; $('#fr-emails').value = ''; } catch (e) { st('#fr-invite-status').textContent = e.message; } }
+  if (b.id === 'fr-copycode') { try { await navigator.clipboard.writeText($('#fr-mycode').value); toast('setup code copied — send it to your friend'); } catch (e) { toast('select the code and copy it'); } }
+}
+let frTimer = null;
+function queueInviteSave() { clearTimeout(frTimer); frTimer = setTimeout(async () => { try { data.settings = await api('/api/settings', { zulip: { invite: $('#fr-link').value, organizer: $('#fr-organizer').value } }); const c = await api('/api/zulip/setup_code'); $('#fr-mycode').value = c.code; } catch (e) { toast(e.message); } }, 600); }
+
 async function loadSync() {
   let s;
   try { s = await api('/api/sync'); } catch (e) { return; }
   const when = x => x.at ? ' · ' + ago(x.at) + ' ago' : '';
   const g = s.google;
-  $('#gstatus').textContent = !g.configured ? 'needs client_secret.json next to quietfeed (see README)'
+  $('#gstatus').textContent = !g.configured ? 'needs client_secret.json next to feedel (see README)'
     : !g.connected ? 'not connected'
     : g.ok === false ? 'error: ' + g.error
     : g.count != null ? `connected · ${g.count} subscriptions, ${g.added} new${when(g)}` : 'connected · syncing on next refresh';
@@ -905,6 +976,7 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.v) { view = b.dataset.v; location.hash = view === 'feed' ? '' : view; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
+  if (b.id && b.id.startsWith('fr-')) { friendsClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
   if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; ytResults = null; render(); return; }
@@ -942,12 +1014,13 @@ document.addEventListener('click', async e => {
   if (b.dataset.w !== undefined) { paperWindow = +b.dataset.w; axResults = null; render(); return; }
   if (b.id === 'ax_clear') { axResults = null; render(); return; }
   if (b.id === 'theme') { cycleTheme(); return; }
+  if (b.id === 'restart') { restartServer(); return; }
   if (b.id === 'linkbtn') { const f = $('#linkform'); f.hidden = !f.hidden; if (!f.hidden) $('#linkq').focus(); return; }
   if (b.id === 'rf') { toast('refreshing…'); await api('/api/refresh', {}); setTimeout(() => load(true), 1500); return; }
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
-  if (b.id === 'quit') { if (confirm('stop quietfeed? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">quietfeed stopped. start it again to continue.</p></main>'; } return; }
+  if (b.id === 'quit') { if (confirm('stop feedel? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">feedel stopped. start it again to continue.</p></main>'; } return; }
   if (b.id === 'importbtn') { const t = $('#paste').value.trim(); if (t) { importText(t, ''); $('#paste').value = ''; } return; }
   if (b.id === 'gconnect') { connectGoogle(); return; }
   if (b.id === 'gdisconnect') { await api('/api/sync/google/disconnect', {}); loadSync(); return; }
@@ -1031,6 +1104,7 @@ document.addEventListener('input', e => {
   const inp = e.target;
   if (inp.id === 'subfilter') return renderSubs();
   if (inp.id === 'feedsearch') { feedQuery = inp.value.trim(); ytResults = null; render(); return; }
+  if (inp.id === 'fr-link' || inp.id === 'fr-organizer') { queueInviteSave(); return; }
   if (inp.id === 'addq') { const k = guessKind(inp.value.trim()); if (k && $('#addkind').value !== k) { $('#addkind').value = k; $('#addhint').textContent = HINTS[k]; } return; }
   if (inp.id === 'libsearch') return renderLibrary();
   if (inp.dataset.k && inp.closest('.person')) {
@@ -1055,7 +1129,7 @@ $('#linkform').addEventListener('submit', async e => {
   const btn = $('#linkform button'); btn.disabled = true; btn.textContent = 'fetching…';
   try { await api('/api/inbox', { url: u, via: 'box' }); $('#linkq').value = ''; $('#linkform').hidden = true; kindFilter = 'inbox'; await load(); }
   catch (err) { toast(err.message, 5000); }
-  btn.disabled = false; btn.textContent = 'open in quietfeed';
+  btn.disabled = false; btn.textContent = 'open in feedel';
 });
 const drop = $('#drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
@@ -1071,6 +1145,7 @@ applyTheme(theme);
 $('#addhint').textContent = HINTS.yt;
 if (location.hash === '#following') view = 'following';
 if (location.hash === '#library') view = 'library';
+if (location.hash === '#friends') view = 'friends';
 if (location.hash === '#talk') view = 'talk';
 if (location.hash === '#inbox') kindFilter = 'inbox';
 const srcHash = location.hash.match(/^#source\/(\w+)\/(.+)$/);

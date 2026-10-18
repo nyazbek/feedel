@@ -1,4 +1,4 @@
-# quietfeed
+# Feedel
 
 A local, distraction-free reader for the YouTube channels, X accounts, Substack newsletters and arXiv categories you actually care about. One chronological list, no recommendations, no Shorts, no autoplay, no counters. Lives at `http://localhost:8765`.
 
@@ -6,15 +6,15 @@ A local, distraction-free reader for the YouTube channels, X accounts, Substack 
 
 ## Run it
 
-Either double-click `quietfeed.exe` (see *Building the executable*), or:
+Either double-click `feedel.exe` (see *Building the executable*), or:
 
 ```
 winget install -e --id shinchiro.mpv   # installs to C:\Program Files\MPV Player
 pip install yt-dlp                     # streaming in mpv, downloads, browser-session sync
-python quietfeed.py
+python feedel.py
 ```
 
-First run creates `quietfeed.db` next to the program and opens the page. Standard library only. The program finds mpv and yt-dlp on its own even when they are not on your PATH, and tells mpv where yt-dlp is. `--no-open` skips opening the browser, `--port N` changes the port. Starting it twice just re-opens the page. *Settings → quit quietfeed* stops it.
+First run creates `feedel.db` next to the program and opens the page. Standard library only. The program finds mpv and yt-dlp on its own even when they are not on your PATH, and tells mpv where yt-dlp is. `--no-open` skips opening the browser, `--port N` changes the port. Starting it twice just re-opens the page. *Settings → quit feedel* stops it.
 
 ## What is in the feed
 
@@ -65,11 +65,11 @@ X's API no longer offers free read access and scraping a logged-in session risks
 
 ## Links from elsewhere
 
-A link someone sends you on WhatsApp, in mail or anywhere else can be opened in quietfeed instead of a browser where the site is blocked. Three ways in, from easiest to most automatic:
+A link someone sends you on WhatsApp, in mail or anywhere else can be opened in feedel instead of a browser where the site is blocked. Three ways in, from easiest to most automatic:
 
-- **+ link** above the feed: paste any YouTube, X, arXiv or article link. quietfeed fetches it itself and shows it as an item in the **inbox**, with play, save and share like everything else, plus a *follow* button for the channel, account, author or newsletter it came from. Channel and profile links become a follow suggestion directly.
-- **Clipboard watcher** (settings): with it on, every link you *copy* that quietfeed can show lands in the inbox by itself. Copy a link in WhatsApp, switch to quietfeed, it is there. A second checkbox widens it from YouTube, X and arXiv links to every link. Only the clipboard text is read, only links are looked at, and nothing leaves the machine except the fetch of that link's own page.
-- **Make quietfeed the link handler** (Windows): run `quietfeed --register-handler` (or `python quietfeed.py --register-handler`), then pick *quietfeed* under *Settings → Apps → Default apps → Web browser*. From then on a click on any link in any app goes through quietfeed: videos, posts and papers open in the inbox, everything else is handed to your normal browser: whatever your default was when you registered (quietfeed remembers it, since afterwards the default is quietfeed itself), shown and changeable under the gear as *send the links it cannot show to*. `--unregister-handler` undoes it. `quietfeed --open URL` is the same thing from a terminal.
+- **+ link** above the feed: paste any YouTube, X, arXiv or article link. feedel fetches it itself and shows it as an item in the **inbox**, with play, save and share like everything else, plus a *follow* button for the channel, account, author or newsletter it came from. Channel and profile links become a follow suggestion directly.
+- **Clipboard watcher** (settings): with it on, every link you *copy* that feedel can show lands in the inbox by itself. Copy a link in WhatsApp, switch to feedel, it is there. A second checkbox widens it from YouTube, X and arXiv links to every link. Only the clipboard text is read, only links are looked at, and nothing leaves the machine except the fetch of that link's own page.
+- **Make feedel the link handler** (Windows): run `feedel --register-handler` (or `python feedel.py --register-handler`), then pick *feedel* under *Settings → Apps → Default apps → Web browser*. From then on a click on any link in any app goes through feedel: videos, posts and papers open in the inbox, everything else is handed to your normal browser: whatever your default was when you registered (feedel remembers it, since afterwards the default is feedel itself), shown and changeable under the gear as *send the links it cannot show to*. `--unregister-handler` undoes it. `feedel --open URL` is the same thing from a terminal.
 
 Tweets are read through X's public syndication endpoint, which needs no login and works for public posts, videos included. A reply shows the post it answers right above it, a quote-post shows the quoted post, and a post continuing the author's own thread says so; without that context half of X reads like half a sentence. Every post has a **thread** action: it shows what the post replies to, the author's own continuation numbered 2/, 3/…, and other people's replies folded away, read from a Nitter conversation page (parents only, through the syndication endpoint, when no instance answers). Videos inside a thread are playable too.
 
@@ -79,9 +79,9 @@ Click any author's name in the feed, the inbox or the following list and you lan
 
 ## Discussions, through Zulip
 
-With Zulip set up (below), quietfeed reads your group's streams back too, and the **talk** tab is where the group uses Zulip from inside quietfeed: enough to read and discuss, not a second chat client.
+With Zulip set up (below), feedel reads your group's streams back too, and the **talk** tab is where the group uses Zulip from inside feedel: enough to read and discuss, not a second chat client.
 
-- **Streams.** Every stream shares go to (the default `#quietfeed` and any per-kind ones) plus any others you list in settings, as text chips at the top of the tab. Each lists its topics newest first: who is in it, how many messages, when, and the item it is about when quietfeed can tell (the video, post or paper is shown right there). A topic with messages you have not read says so in muted text (`3 new`), using Zulip's own read flags, so opening the thread here marks it read in Zulip too and vice versa. There is no counter anywhere else, nothing in the nav.
+- **Streams.** Every stream shares go to (the default `#feedel` and any per-kind ones) plus any others you list in settings, as text chips at the top of the tab. Each lists its topics newest first: who is in it, how many messages, when, and the item it is about when feedel can tell (the video, post or paper is shown right there). A topic with messages you have not read says so in muted text (`3 new`), using Zulip's own read flags, so opening the thread here marks it read in Zulip too and vice versa. There is no counter anywhere else, nothing in the nav.
 - **Threads.** *open discussion* unfolds the topic in place, LaTeX rendered, oldest first, with a reply box that posts as you. Each message carries its reactions (click one to add yours or take it back, `+` offers a few more) and, on your own messages, an **edit** link that opens the markdown source. The same thread appears under any feed, inbox or library item that a topic links to, where a quiet line says who is talking about it.
 - **New topic.** *+ topic* at the top of the tab starts a topic from scratch in the selected stream: a name and a first message, markdown and `$LaTeX$`.
 - **Search.** The box asks Zulip's own search within the selected stream and shows the matches grouped by topic, Zulip's highlighting kept, each openable in place.
@@ -90,17 +90,25 @@ Everything beyond that (people, private messages, stream settings, long history)
 
 ## Recommendations, from friends only
 
-The only recommender in quietfeed is a person who chose you. In the share box, *recommend to someone instead* lets you pick friends (or everyone) and write why; it posts to the recommendations stream in Zulip as "Nahuel recommends this to @Juan", so Juan is notified the Zulip way too. On the other side, everything recommended to you, by name or to everyone, collects under a **from friends** chip in your feed: the item itself with play, save and all the usual actions, who recommended it and their note, a *thanks* that reacts on their message, and the discussion one click away. A friend's recommendation of something already in your feed also shows as a line under that item. Nothing else is ever recommended.
+The only recommender in feedel is a person who chose you. In the share box, *recommend to someone instead* lets you pick friends (or everyone) and write why; it posts to the recommendations stream in Zulip as "Nahuel recommends this to @Juan", so Juan is notified the Zulip way too. On the other side, everything recommended to you, by name or to everyone, collects under a **from friends** chip in your feed: the item itself with play, save and all the usual actions, who recommended it and their note, a *thanks* that reacts on their message, and the discussion one click away. A friend's recommendation of something already in your feed also shows as a line under that item. Nothing else is ever recommended.
+
+## Friends: getting people into the group
+
+The **friends** tab is the whole onboarding, for both sides.
+
+- **Organizer**: once your feedel is connected to the group's Zulip, the tab shows who is there, lets you create a reusable invitation link (or paste one from Zulip), send e-mail invitations through Zulip to specific addresses, and copy a **setup code**: one pasteable string carrying the site, the streams, the invitation link and your contact, with no keys in it.
+- **Friend**: paste the setup code, and three steps appear: open the invitation and create the Zulip account (or ask the organizer for access when the code has no link), open the Zulip account settings to copy the API key, paste it with the e-mail used. Connecting also subscribes them to the group's streams. From then on their feed shows the group's discussions and recommendations.
+- **No group yet?** Create a free Zulip organization at zulip.com/new, make the streams, connect under settings, and the tab starts handing out codes.
 
 ## Sharing to Zulip
 
-The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). Every item also has **copy link** for sending it to a friend any other way. **share** opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.
+The conversation lives in Zulip, not in feedel (see [ROADMAP.md](ROADMAP.md)). Every item also has **copy link** for sending it to a friend any other way. **share** opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.
 
-Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `quietfeed`; create it in Zulip first). *Test connection* confirms it. Below that, each kind can go to its own stream, videos to `#vids`, papers to `#papers` and so on; the share box shows the target and lets you pick another. quietfeed reads every stream named there, so discussions are found wherever they live, and the **talk** tab can show further streams you list, comma-separated. The key is stored in your `quietfeed.db` and never shown back on the page.
+Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `feedel`; create it in Zulip first). *Test connection* confirms it. Below that, each kind can go to its own stream, videos to `#vids`, papers to `#papers` and so on; the share box shows the target and lets you pick another. feedel reads every stream named there, so discussions are found wherever they live, and the **talk** tab can show further streams you list, comma-separated. The key is stored in your `feedel.db` and never shown back on the page.
 
 ## Library
 
-*Save* on anything puts it in the library, where it stays after it has left the feed. Each saved item takes **tags** and a **note**; the library filters by kind and tag and searches titles, authors, abstracts and notes. Seen and saved state live in `quietfeed.db`.
+*Save* on anything puts it in the library, where it stays after it has left the feed. Each saved item takes **tags** and a **note**; the library filters by kind and tag and searches titles, authors, abstracts and notes. Seen and saved state live in `feedel.db`.
 
 ## Settings (the gear)
 
@@ -110,15 +118,15 @@ Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide s
 
 ```
 pip install pyinstaller yt-dlp
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name quietfeed --add-data "web;web" --collect-submodules yt_dlp quietfeed.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name feedel --add-data "web;web" --collect-submodules yt_dlp feedel.py
 ```
 
-`dist\quietfeed.exe` is self-contained: the page, yt-dlp and everything else are inside. It writes `quietfeed.db` and `quietfeed.log` next to itself, so put it in its own folder. It has no console window; *Settings → quit quietfeed* stops it. If no `yt-dlp.exe` is installed, mpv streams through the exe itself, which answers as yt-dlp when asked. Windows SmartScreen will warn once about an unsigned program; some antivirus products dislike single-file PyInstaller builds, in which case drop `--onefile` and ship the `dist\quietfeed` folder instead.
+`dist\feedel.exe` is self-contained: the page, yt-dlp and everything else are inside. It writes `feedel.db` and `feedel.log` next to itself, so put it in its own folder. It has no console window; *Settings → quit feedel* stops it. If no `yt-dlp.exe` is installed, mpv streams through the exe itself, which answers as yt-dlp when asked. Windows SmartScreen will warn once about an unsigned program; some antivirus products dislike single-file PyInstaller builds, in which case drop `--onefile` and ship the `dist\feedel` folder instead.
 
 ## Files
 
-- `quietfeed.db` — one SQLite file with everything: settings, what you follow, seen and saved items with your tags and notes, the items themselves (kept 90 days after they leave their feed; saved ones forever) and the duration / Shorts cache. Back it up by copying it. `python quietfeed.py --export > backup.json` dumps it all as JSON; `python quietfeed.py --import backup.json` merges a dump (or an old `config.json` / `state.json` / `cache.json`) back in, adding and never removing. Open it with any SQLite tool to look around.
-- `config.json`, `state.json`, `cache.json` — the files older versions used. They are migrated into `quietfeed.db` the first time this version runs and renamed `*.json.migrated`.
+- `feedel.db` — one SQLite file with everything: settings, what you follow, seen and saved items with your tags and notes, the items themselves (kept 90 days after they leave their feed; saved ones forever) and the duration / Shorts cache. Back it up by copying it. `python feedel.py --export > backup.json` dumps it all as JSON; `python feedel.py --import backup.json` merges a dump (or an old `config.json` / `state.json` / `cache.json`) back in, adding and never removing. Open it with any SQLite tool to look around.
+- `config.json`, `state.json`, `cache.json` — the files older versions used. They are migrated into `feedel.db` the first time this version runs and renamed `*.json.migrated`.
 - `cache/avatars/` — avatar images. Safe to delete.
 - `downloads/` — what the **download** button saves.
 

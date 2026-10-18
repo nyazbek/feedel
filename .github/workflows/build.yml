@@ -1,4 +1,4 @@
-# Builds a single-file quietfeed for Windows and macOS.
+# Builds a single-file feedel for Windows and macOS.
 # Runs on every tag that starts with "v" (git tag v0.2 && git push --tags) and attaches
 # the binaries to a GitHub release; can also be run by hand from the Actions tab.
 name: build
@@ -19,12 +19,12 @@ jobs:
         include:
           - os: windows-latest
             sep: ";"
-            built: dist/quietfeed.exe
-            asset: quietfeed-windows.exe
+            built: dist/feedel.exe
+            asset: feedel-windows.exe
           - os: macos-latest
             sep: ":"
-            built: dist/quietfeed
-            asset: quietfeed-macos
+            built: dist/feedel
+            asset: feedel-macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
           python-version: "3.12"
       - run: pip install pyinstaller yt-dlp
       - name: build
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name quietfeed --add-data "web${{ matrix.sep }}web" --collect-submodules yt_dlp quietfeed.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name feedel --add-data "web${{ matrix.sep }}web" --collect-submodules yt_dlp feedel.py
       - name: smoke test (serves the page and answers as yt-dlp)
         shell: bash
         run: |
