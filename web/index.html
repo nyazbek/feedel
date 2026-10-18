@@ -2,24 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>quietfeed</title>
+<title>Feedel</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <script>try{const t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <div class="shell">
 <aside class="side">
-  <h1>quietfeed</h1>
+  <h1>feedel</h1>
   <nav class="views">
     <button data-v="feed" class="on"><span class="ic">☰</span>your feed</button>
     <button data-v="talk"><span class="ic">◌</span>talk</button>
     <button data-v="library"><span class="ic">◇</span>library</button>
     <button data-v="following"><span class="ic">◎</span>following</button>
+    <button data-v="friends"><span class="ic">◉</span>friends</button>
   </nav>
   <div class="tools">
     <button id="theme" class="icon" title="theme: auto / light / dark">◐</button>
@@ -27,6 +28,8 @@
   </div>
 </aside>
 <main>
+
+<div id="stale" class="notice" hidden>feedel's code changed since this copy started, so parts of the page will not work until it restarts. <button id="restart" class="solid">restart feedel</button><span class="meta" id="restart-status"></span></div>
 
 <div id="settings" class="panel" hidden>
   <div class="grid2">
@@ -40,14 +43,14 @@
     <label><input type="checkbox" id="s_clipboard_any"> …including links to ordinary pages, not only YouTube, X and arXiv</label>
     <label><input type="checkbox" id="s_window"> open in its own window, not a browser tab (closing it hides it to the tray) <span class="meta" id="s_window_note"></span></label>
   </div>
-  <label class="block">when quietfeed is the link handler, send the links it cannot show to
+  <label class="block">when feedel is the link handler, send the links it cannot show to
     <input id="s_fallback_browser" placeholder="auto"> <span class="meta" id="s_fallback_auto"></span></label>
   <label class="block">hide anything whose title contains (one per line; wrap in / / for a regex)
     <textarea id="s_block_words" rows="3" placeholder="giveaway&#10;reacts to&#10;/\b(top|best) \d+\b/"></textarea></label>
   <h2 class="sub">Zulip <span class="meta">— where the conversation lives. “share” posts an item and your note there, as you; the <b>talk</b> tab reads it back.</span></h2>
   <div class="grid2">
     <label>site <input id="z_site" placeholder="yourgroup.zulipchat.com"></label>
-    <label>share to stream <input id="z_stream" placeholder="quietfeed"></label>
+    <label>share to stream <input id="z_stream" placeholder="feedel"></label>
     <label>your e-mail <input id="z_email" placeholder="you@example.com"></label>
     <label>API key <input id="z_key" type="password" placeholder="Zulip → settings → account → API key" autocomplete="off"></label>
   </div>
@@ -62,7 +65,7 @@
     <input id="z_extra" placeholder="general, reading-group"></label>
   <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
   <div class="row"><button id="s_save" class="solid">save</button><span class="meta">per-source overrides live in the following tab</span>
-    <span class="grow"></span><button id="quit" class="link">quit quietfeed</button></div>
+    <span class="grow"></span><button id="quit" class="link">quit feedel</button></div>
 </div>
 
 <section id="view-feed">
@@ -76,7 +79,7 @@
   </div>
   <form id="linkform" class="row toolbar" hidden>
     <input id="linkq" placeholder="paste a YouTube, X, arXiv or any article link — it opens here, not in the browser" autocomplete="off">
-    <button class="solid">open in quietfeed</button>
+    <button class="solid">open in feedel</button>
   </form>
   <div id="papers" class="toolbar" hidden>
     <div class="chips" id="windows">
@@ -114,6 +117,43 @@
   </form>
   <div id="talkerrs"></div>
   <div id="talklist"></div>
+</section>
+
+<section id="view-friends" hidden>
+  <div class="panel" id="fr-status">
+    <h2>your group</h2>
+    <p class="meta">feedel talks to your friends through a Zulip organization: that is where discussions, shares and recommendations live. Zulip is free for small groups, renders LaTeX, and has its own apps for when you are away from here.</p>
+    <div id="fr-state" class="meta">…</div>
+    <div id="fr-people"></div>
+    <div class="row"><button id="fr-test" class="link">check connection</button><button id="fr-subscribe" class="link">join the group's streams</button><span class="meta" id="fr-note"></span></div>
+  </div>
+
+  <div class="panel" id="fr-join">
+    <h2>join a friend's group</h2>
+    <p class="meta">Your friend sends you a <b>setup code</b> from their feedel. Paste it here and the three steps below do the rest.</p>
+    <div class="row"><input id="fr-code" placeholder="qf1.…" autocomplete="off"><button id="fr-apply" class="solid">use this code</button></div>
+    <ol class="steps" id="fr-steps" hidden>
+      <li><b>Create your account</b> on the group's Zulip <span class="meta" id="fr-realm"></span> — <a id="fr-invite" href="#" target="_blank" rel="noopener">open the invitation ↗</a> <span class="meta" id="fr-noinvite" hidden>(no invitation link in the code: <a id="fr-ask" href="#">ask the organizer for access</a>)</span></li>
+      <li><b>Get your API key</b>: once signed in, <a id="fr-keypage" href="#" target="_blank" rel="noopener">open your Zulip account settings ↗</a> and copy the API key.</li>
+      <li><b>Paste it here</b> with the e-mail you used:
+        <div class="row"><input id="fr-email" placeholder="you@example.com"><input id="fr-key" type="password" placeholder="API key" autocomplete="off"><button id="fr-connect" class="solid">connect</button><span class="meta" id="fr-connect-status"></span></div></li>
+    </ol>
+  </div>
+
+  <div class="panel" id="fr-invitepanel">
+    <h2>invite friends</h2>
+    <p class="meta">Two things get a friend in: an invitation to the Zulip (a link they open, or an e-mail Zulip sends them) and the setup code that points their feedel at this group.</p>
+    <div class="row sync"><b>invitation link</b><input id="fr-link" placeholder="paste a reusable invitation link from Zulip, or create one"><button id="fr-mklink" class="link">create one</button></div>
+    <div class="row sync"><b>organizer contact</b><input id="fr-organizer" placeholder="your e-mail, so friends know whom to ask"></div>
+    <div class="row sync"><b>e-mail invitations</b><input id="fr-emails" placeholder="ana@example.com, juan@example.com"><button id="fr-sendmail" class="link">send through Zulip</button></div>
+    <div class="row sync"><b>setup code</b><input id="fr-mycode" readonly><button id="fr-copycode" class="solid">copy code</button></div>
+    <div class="meta" id="fr-invite-status"></div>
+  </div>
+
+  <div class="panel">
+    <h2>no group yet?</h2>
+    <p class="meta">Create a Zulip organization at <a href="https://zulip.com/new/" target="_blank" rel="noopener">zulip.com/new</a> (free, a couple of minutes), create the streams you want (the defaults here are <code>feedel</code> and <code>recommendations</code>), then come back and connect under settings. From then on this tab hands out the code and the invitations.</p>
+  </div>
 </section>
 
 <section id="view-source" hidden>

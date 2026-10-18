@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-quietfeed — a distraction-free local reader for YouTube channels, X/Twitter accounts,
+feedel — a distraction-free local reader for YouTube channels, X/Twitter accounts,
 Substack / RSS feeds and arXiv.
 
 Runs a tiny web server on http://localhost:8765 and shows one chronological list:
@@ -12,7 +12,7 @@ Setup (Windows):
     winget install -e --id shinchiro.mpv
     pip install yt-dlp            (streaming through mpv, downloads, browser-session sync)
     pip install pywebview pystray pillow   (optional: `--window` shows the page in its own window with a tray icon)
-    python quietfeed.py
+    python feedel.py
 
 Then open the "following" tab in the page to import your subscriptions and follow
 new channels, newsletters, arXiv categories and authors. Standard library only.
@@ -20,7 +20,7 @@ new channels, newsletters, arXiv categories and authors. Standard library only.
 
 import sys
 
-# When mpv is pointed at the frozen quietfeed.exe as its "yt-dlp", it calls it with -J. Answer as yt-dlp.
+# When mpv is pointed at the frozen feedel.exe as its "yt-dlp", it calls it with -J. Answer as yt-dlp.
 if len(sys.argv) > 1 and any(a in ("-J", "-j", "--dump-single-json", "--dump-json") for a in sys.argv[1:]):
     import yt_dlp
     sys.exit(yt_dlp.main())
@@ -39,9 +39,17 @@ from urllib.parse import parse_qs, urlencode, urlparse
 FROZEN = getattr(sys, "frozen", False)
 HERE = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
 WEB = os.path.join(getattr(sys, "_MEIPASS", HERE), "web")
-DB_PATH = os.path.join(HERE, "quietfeed.db")
+DB_PATH = os.path.join(HERE, "feedel.db")
+for _old in ("quietfeed.db",):  # the program was called quietfeed until October 2026; the data carries over
+    if not os.path.exists(DB_PATH) and os.path.exists(os.path.join(HERE, _old)):
+        try:
+            for _suf in ("", "-wal", "-shm"):
+                if os.path.exists(os.path.join(HERE, _old + _suf)):
+                    os.replace(os.path.join(HERE, _old + _suf), DB_PATH + _suf)
+        except OSError:  # still open by an older copy: keep using it under its old name for this run
+            DB_PATH = os.path.join(HERE, _old)
 LEGACY_JSON = {k: os.path.join(HERE, k + ".json") for k in ("config", "state", "cache")}  # pre-0.3 files, migrated on first run
-LOG_PATH = os.path.join(HERE, "quietfeed.log")
+LOG_PATH = os.path.join(HERE, "feedel.log")
 AVATAR_DIR = os.path.join(HERE, "cache", "avatars")
 PORT = 8765
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -70,7 +78,7 @@ DEFAULT_CONFIG = {
     # titles matching any of these are hidden; plain text = case-insensitive substring, /…/ = regex
     "filters": {"block_words": []},
     # watch_clipboard: links you copy anywhere (WhatsApp, mail…) land in the inbox; clipboard_any widens it from
-    # YouTube/X/arXiv links to every link. fallback_browser: where `--open` sends links quietfeed cannot show ("" = auto)
+    # YouTube/X/arXiv links to every link. fallback_browser: where `--open` sends links feedel cannot show ("" = auto)
     # window: the page in its own window (pywebview) with a tray icon instead of a browser tab; the size and position it had
     # last time are kept under "window" below
     "ui": {"hide_thumbnails": False, "calm_titles": True, "hide_seen": False, "watch_clipboard": False, "clipboard_any": False,
@@ -83,8 +91,10 @@ DEFAULT_CONFIG = {
     # "streams": where each kind of share goes (videos → #vids, papers → #papers…); empty means the default stream;
     # "extra_streams": other streams the talk tab shows and lets you read, search and post in;
     # "recs_stream": where recommendations between friends go; a message there mentioning you is a recommendation for you
-    "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
-              "extra_streams": [], "recs_stream": "recommendations"},
+    "zulip": {"site": "", "email": "", "api_key": "", "stream": "feedel", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
+              "extra_streams": [], "recs_stream": "recommendations",
+              # "invite": a reusable invitation link to the group's Zulip; "organizer": whom a friend writes to for access
+              "invite": "", "organizer": ""},
     "player": ["mpv", "--ytdl-format=bestvideo[height<=1080]+bestaudio/best", "{url}"],
     "download_dir": os.path.join(HERE, "downloads"),
     "refresh_minutes": 30,
@@ -251,13 +261,13 @@ CREATE TABLE IF NOT EXISTS cache (kind TEXT NOT NULL, key TEXT NOT NULL, value T
 CREATE TABLE IF NOT EXISTS unfollowed (  -- an unfollow is a decision: syncs and imports do not quietly undo it
     user_id INTEGER NOT NULL REFERENCES users(id), kind TEXT NOT NULL, ref TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
     removed INTEGER NOT NULL, PRIMARY KEY (user_id, kind, ref));
-CREATE TABLE IF NOT EXISTS inbox (  -- links handed to quietfeed from elsewhere (clipboard, the link box, the URL handler)
+CREATE TABLE IF NOT EXISTS inbox (  -- links handed to feedel from elsewhere (clipboard, the link box, the URL handler)
     user_id INTEGER NOT NULL REFERENCES users(id), url TEXT NOT NULL, item_json TEXT NOT NULL, via TEXT NOT NULL DEFAULT '',
     added INTEGER NOT NULL, PRIMARY KEY (user_id, url));
 """
 
 def open_db():
-    """Open (creating if needed) quietfeed.db in WAL mode. Returns (connection, True when it holds no settings yet)."""
+    """Open (creating if needed) feedel.db in WAL mode. Returns (connection, True when it holds no settings yet)."""
     con = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)  # transactions are explicit: see tx()
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
@@ -462,7 +472,7 @@ def export_data():
     """Everything in the database as one JSON-able dict: the old config / state / cache shapes plus the stored items."""
     with LOCK:
         rows = DB.execute("SELECT payload_json, fetched FROM items ORDER BY ts DESC").fetchall()
-        return {"quietfeed_export": 1, "exported_at": int(time.time()),
+        return {"feedel_export": 1, "exported_at": int(time.time()),
                 "config": json.loads(json.dumps(CONFIG)), "state": json.loads(json.dumps(SEEN_STATE)),
                 "cache": json.loads(json.dumps(CACHE)),
                 "items": [{**json.loads(r["payload_json"]), "fetched": r["fetched"]} for r in rows]}
@@ -535,7 +545,7 @@ def migrate_legacy_json():
     for p in found.values():
         os.replace(p, p + ".migrated")
     log("migrated " + ", ".join(os.path.basename(p) for p in found.values())
-        + " into quietfeed.db; the old files are kept as *.json.migrated")
+        + " into feedel.db; the old files are kept as *.json.migrated")
     return True
 
 # ---------------------------------------------------------------- state
@@ -557,6 +567,41 @@ CACHE_DIRTY = set()  # (kind, key) pairs changed since the last save_cache
 SEEN_STATE = load_marks()
 
 STATE = {"items": load_items(), "errors": [], "last_refresh": None, "refreshing": False}
+
+def code_mtime():
+    """When the code on disk last changed: the script and the page files (the frozen exe counts as one file)."""
+    paths = [sys.executable] if FROZEN else [os.path.abspath(__file__)] + [os.path.join(WEB, f) for f in ("index.html", "app.js", "style.css")]
+    try:
+        return max(os.path.getmtime(p) for p in paths if os.path.exists(p))
+    except Exception:
+        return 0.0
+
+CODE_MTIME_AT_START = code_mtime()
+
+def code_is_stale():
+    """True when the script or the page on disk is newer than the running process: the page the browser
+    loads then expects routes this process does not have."""
+    return code_mtime() > CODE_MTIME_AT_START + 1
+
+def restart_self():
+    """Re-execute this program in place (same arguments), after the response has gone out."""
+    log("restarting on request")
+    def go():
+        time.sleep(0.6)
+        try:
+            save_cache()
+        except Exception:
+            pass
+        args = [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)]) + [a for a in sys.argv[1:] if a != "--inbox"]
+        if "--no-open" not in args and not WINDOW.get("show"):
+            args.append("--no-open")  # the page that asked is already open (in a window it dies with this process: reopen it)
+        try:
+            if WINDOW.get("teardown"):
+                WINDOW["teardown"]()  # the tray icon and window go now; os._exit alone would leave a ghost tray icon
+            subprocess.Popen(args, cwd=HERE, close_fds=True)
+        finally:
+            os._exit(0)
+    threading.Thread(target=go, daemon=True).start()
 AVATARS = {}  # in-memory bytes cache
 
 def save_config():
@@ -1377,10 +1422,11 @@ def settings_payload():
     z = CONFIG.get("zulip") or {}
     return {"hide_shorts": CONFIG["youtube"].get("hide_shorts", True), "min_minutes": CONFIG["youtube"].get("min_minutes", 0),
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
-            "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
+            "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "feedel"),
                       "streams": {k: zulip_stream_for(k) for k in KINDS}, "streams_set": z.get("streams") or {},
                       "all_streams": zulip_all_streams(), "extra_streams": parse_streams(z.get("extra_streams")), "shown_streams": zulip_streams(),
                       "recs_stream": zulip_recs_stream(),
+                      "invite": z.get("invite", ""), "organizer": z.get("organizer", ""),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             "window_libs_missing": window_libs_missing(), "in_window": "show" in WINDOW,
@@ -1399,6 +1445,7 @@ def items_payload():
                 "discussions": discussions_payload(),
                 "recs": recs_payload(),
                 "zulip": zulip_status(),
+                "stale": code_is_stale(),
                 "settings": settings_payload()}
 
 def discussions_payload():
@@ -1444,6 +1491,9 @@ def update_settings(patch):
                 z["extra_streams"] = [s for s in parse_streams(patch["zulip"]["extra_streams"]) if s not in zulip_all_streams()]
             if "recs_stream" in patch["zulip"]:
                 z["recs_stream"] = str(patch["zulip"]["recs_stream"]).strip().lstrip("#") or "recommendations"
+            for k in ("invite", "organizer"):
+                if k in patch["zulip"]:
+                    z[k] = str(patch["zulip"][k]).strip()
         save_config()
         return settings_payload()
 
@@ -1741,7 +1791,7 @@ SYNC = {"state": None, "google": None, "browser": None, "x": None}
 def google_client():
     d = load_json(GOOGLE_SECRET_PATH, None)
     if not d:
-        raise RuntimeError("client_secret.json is missing next to quietfeed (README → 'YouTube account sync')")
+        raise RuntimeError("client_secret.json is missing next to feedel (README → 'YouTube account sync')")
     c = d.get("installed") or d.get("web") or {}
     if not c.get("client_id") or not c.get("client_secret"):
         raise RuntimeError("client_secret.json has no client_id / client_secret")
@@ -1855,9 +1905,9 @@ def sync_payload():
             "browser": {"name": (CONFIG.get("sync") or {}).get("browser", ""), **(SYNC["browser"] or {})},
             "x": {"pending": len(CONFIG["twitter"].get("pending_ids", [])), **(SYNC["x"] or {})}}
 
-OAUTH_DONE_PAGE = """<!doctype html><meta charset="utf-8"><title>quietfeed</title>
+OAUTH_DONE_PAGE = """<!doctype html><meta charset="utf-8"><title>feedel</title>
 <body style="font:16px Georgia,serif;background:#f6f4ee;color:#1d1d1b;padding:40px;max-width:520px;margin:auto">
-<p>%s</p><p><a href="http://localhost:%d/#following">back to quietfeed</a> — you can close this tab.</p>"""
+<p>%s</p><p><a href="http://localhost:%d/#following">back to feedel</a> — you can close this tab.</p>"""
 
 # ---------------------------------------------------------------- playback
 
@@ -1881,7 +1931,7 @@ def find_exe(name):
     return None
 
 def ytdlp_exe():
-    """A yt-dlp executable for mpv to call. The frozen quietfeed.exe can answer as one itself."""
+    """A yt-dlp executable for mpv to call. The frozen feedel.exe can answer as one itself."""
     return find_exe("yt-dlp") or (sys.executable if FROZEN else None)
 
 def play(video_id):
@@ -2203,7 +2253,7 @@ def clipboard_text():
     return None
 
 def clipboard_loop():
-    """Opt-in: every link you copy that quietfeed can show goes to the inbox. Only the text is read, only for links,
+    """Opt-in: every link you copy that feedel can show goes to the inbox. Only the text is read, only for links,
     and nothing leaves the machine except the fetch of that link's own page."""
     last, seen = None, set()
     while True:
@@ -2231,14 +2281,14 @@ def _safe_take(url, via):
 
 def system_default_browser():
     """Windows: the executable behind the current default browser for https links, or None.
-    Returns None too when that default is quietfeed itself (after --register-handler)."""
+    Returns None too when that default is feedel itself (after --register-handler)."""
     if sys.platform != "win32":
         return None
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice") as k:
             prog = winreg.QueryValueEx(k, "ProgId")[0]
-        if not prog or prog.lower().startswith("quietfeed"):
+        if not prog or prog.lower().startswith("feedel"):
             return None
         with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog + r"\shell\open\command") as k:
             cmd = winreg.QueryValueEx(k, "")[0]
@@ -2257,11 +2307,11 @@ def remember_default_browser():
         with LOCK:
             CONFIG["fallback_browser"] = b
             save_config()
-        log("  links quietfeed cannot show will go to", b)
+        log("  links feedel cannot show will go to", b)
     return b
 
 def browser_for_the_rest():
-    """The browser `--open` hands non-quietfeed links to: the configured one, else the system default,
+    """The browser `--open` hands non-feedel links to: the configured one, else the system default,
     else the first browser found."""
     b = CONFIG.get("fallback_browser") or ""
     if b:
@@ -2285,8 +2335,8 @@ def browser_for_the_rest():
     return None
 
 def open_link_cli(url):
-    """`quietfeed --open URL`: a video, post, paper or page link goes to the inbox and the page opens on it;
-    anything else goes to the normal browser. This is what makes quietfeed usable as the system's link handler."""
+    """`feedel --open URL`: a video, post, paper or page link goes to the inbox and the page opens on it;
+    anything else goes to the normal browser. This is what makes feedel usable as the system's link handler."""
     k = link_kind(url)
     if k in ("yt", "tw", "arxiv"):
         import webbrowser
@@ -2318,26 +2368,31 @@ def handler_command():
     return f'"{pyw if os.path.isfile(pyw) else exe}" "{os.path.abspath(__file__)}" --open "%1"'
 
 def register_handler(on=True):
-    """Windows: make quietfeed selectable under Settings → Apps → Default apps → Web browser. After choosing it,
+    """Windows: make feedel selectable under Settings → Apps → Default apps → Web browser. After choosing it,
     every link from WhatsApp, mail or any app goes through `--open`. Nothing is changed without you picking it there."""
     if sys.platform != "win32":
         raise RuntimeError("the link handler is Windows-only for now; on macOS use the link box or the clipboard watcher")
     import winreg
-    base = r"Software\Clients\StartMenuInternet\quietfeed"
-    if not on:
-        for key in (base + r"\Capabilities\URLAssociations", base + r"\Capabilities", base + r"\shell\open\command", base + r"\shell\open",
-                    base + r"\shell", base, r"Software\Classes\quietfeedURL\shell\open\command", r"Software\Classes\quietfeedURL\shell\open",
-                    r"Software\Classes\quietfeedURL\shell", r"Software\Classes\quietfeedURL"):
+    def drop(name):  # remove a registration by name: ours, or the one the program had as quietfeed
+        b = r"Software\Clients\StartMenuInternet\\" + name
+        for key in (b + r"\Capabilities\URLAssociations", b + r"\Capabilities", b + r"\shell\open\command", b + r"\shell\open",
+                    b + r"\shell", b, r"Software\Classes\\" + name + r"URL\shell\open\command", r"Software\Classes\\" + name + r"URL\shell\open",
+                    r"Software\Classes\\" + name + r"URL\shell", r"Software\Classes\\" + name + "URL"):
             try:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
             except OSError:
                 pass
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\RegisteredApplications", 0, winreg.KEY_SET_VALUE) as k:
-                winreg.DeleteValue(k, "quietfeed")
+                winreg.DeleteValue(k, name)
         except OSError:
             pass
-        return "quietfeed removed from the browser list"
+
+    base = r"Software\Clients\StartMenuInternet\feedel"
+    drop("quietfeed")  # an older registration under the old name would otherwise sit beside this one
+    if not on:
+        drop("feedel")
+        return "feedel removed from the browser list"
     cmd = handler_command()
 
     def put(path, values):
@@ -2345,14 +2400,14 @@ def register_handler(on=True):
             for name, val in values.items():
                 winreg.SetValueEx(k, name, 0, winreg.REG_SZ, val)
 
-    put(r"Software\Classes\quietfeedURL", {"": "quietfeed link", "URL Protocol": ""})
-    put(r"Software\Classes\quietfeedURL\shell\open\command", {"": cmd})
-    put(base, {"": "quietfeed"})
-    put(base + r"\Capabilities", {"ApplicationName": "quietfeed", "ApplicationDescription": "Opens videos, posts and papers in quietfeed; everything else in your normal browser"})
-    put(base + r"\Capabilities\URLAssociations", {"http": "quietfeedURL", "https": "quietfeedURL"})
+    put(r"Software\Classes\feedelURL", {"": "feedel link", "URL Protocol": ""})
+    put(r"Software\Classes\feedelURL\shell\open\command", {"": cmd})
+    put(base, {"": "feedel"})
+    put(base + r"\Capabilities", {"ApplicationName": "feedel", "ApplicationDescription": "Opens videos, posts and papers in feedel; everything else in your normal browser"})
+    put(base + r"\Capabilities\URLAssociations", {"http": "feedelURL", "https": "feedelURL"})
     put(base + r"\shell\open\command", {"": cmd})
-    put(r"Software\RegisteredApplications", {"quietfeed": base + r"\Capabilities"})
-    # remember today's default browser before it becomes quietfeed; through the running instance if there is one,
+    put(r"Software\RegisteredApplications", {"feedel": base + r"\Capabilities"})
+    # remember today's default browser before it becomes feedel; through the running instance if there is one,
     # so its in-memory settings do not overwrite ours on its next save
     kept = CONFIG.get("fallback_browser") or system_default_browser()
     if kept and not CONFIG.get("fallback_browser"):
@@ -2361,7 +2416,7 @@ def register_handler(on=True):
                   headers={"Content-Type": "application/json"})
         except Exception:
             remember_default_browser()
-    return ("registered: now pick quietfeed under Settings → Apps → Default apps → Web browser"
+    return ("registered: now pick feedel under Settings → Apps → Default apps → Web browser"
             + (f"\nother links will keep opening in {kept}" if kept else "\nno default browser detected: set fallback_browser in settings"))
 
 # ---------------------------------------------------------------- zulip (where the conversation lives)
@@ -2371,7 +2426,7 @@ def zulip_cfg():
     site = (z.get("site") or "").strip().rstrip("/")
     if site and not site.startswith("http"):
         site = "https://" + site
-    return site, (z.get("email") or "").strip(), (z.get("api_key") or "").strip(), (z.get("stream") or "quietfeed").strip().lstrip("#") or "quietfeed"
+    return site, (z.get("email") or "").strip(), (z.get("api_key") or "").strip(), (z.get("stream") or "feedel").strip().lstrip("#") or "feedel"
 
 def zulip_ready():
     site, email, key, _ = zulip_cfg()
@@ -2394,7 +2449,7 @@ def zulip_all_streams():
     return out
 
 def parse_streams(v):
-    """A streams setting as typed ('quietfeed, papers' or one per line) or as a list → clean names, no '#', no repeats."""
+    """A streams setting as typed ('feedel, papers' or one per line) or as a list → clean names, no '#', no repeats."""
     if isinstance(v, str):
         v = re.split(r"[,\n]", v)
     out = []
@@ -2405,7 +2460,7 @@ def parse_streams(v):
     return out
 
 def zulip_streams():
-    """Every stream quietfeed reads and the talk tab shows: the share streams (default first, then per kind),
+    """Every stream feedel reads and the talk tab shows: the share streams (default first, then per kind),
     then the extra streams listed in settings."""
     out = zulip_all_streams()
     for s in parse_streams((CONFIG.get("zulip") or {}).get("extra_streams")):
@@ -2455,7 +2510,89 @@ def zulip_me():
 def zulip_test():
     STATE.pop("zulip_me", None)
     me = zulip_me()
-    return {"ok": True, "name": me["name"], "email": me["email"], "stream": zulip_cfg()[3], "share_streams": zulip_all_streams(), "streams": zulip_streams()}
+    return {"ok": True, "name": me["name"], "email": me["email"], "stream": zulip_cfg()[3], "share_streams": zulip_all_streams(), "streams": zulip_streams(),
+            "realm": zulip_realm_name(), "admin": bool(me.get("admin"))}
+
+def zulip_realm_name():
+    """The organization's name, from the public server settings; '' when unreachable."""
+    site = zulip_cfg()[0]
+    if not site:
+        return ""
+    try:
+        return json.loads(fetch(site + "/api/v1/server_settings", timeout=10)).get("realm_name", "")
+    except Exception:
+        return ""
+
+# ---- getting friends in: a setup code the organizer sends, invitations, and joining the group's streams
+
+def zulip_setup_code():
+    """Everything a friend's feedel needs to point at this group, as one pasteable code (no keys, no e-mails
+    of yours beyond the organizer contact you chose)."""
+    z = CONFIG.get("zulip") or {}
+    d = {"v": 1, "site": zulip_cfg()[0], "stream": zulip_cfg()[3], "streams": {k: zulip_stream_for(k) for k in KINDS},
+         "extra_streams": parse_streams(z.get("extra_streams")), "recs_stream": zulip_recs_stream(),
+         "invite": z.get("invite", ""), "organizer": z.get("organizer", ""), "realm": zulip_realm_name()}
+    return "qf1." + base64.urlsafe_b64encode(json.dumps(d, ensure_ascii=False).encode()).decode().rstrip("=")
+
+def zulip_apply_setup(code):
+    """A setup code → this feedel's Zulip settings (site, streams, invite link, organizer); the person's own
+    e-mail and API key are theirs to add."""
+    code = code.strip()
+    if not code.startswith("qf1."):
+        raise RuntimeError("that is not a feedel setup code (it starts with qf1.)")
+    raw = code[4:] + "=" * (-len(code[4:]) % 4)
+    try:
+        d = json.loads(base64.urlsafe_b64decode(raw.encode()).decode())
+    except Exception:
+        raise RuntimeError("the setup code is damaged; ask for it again")
+    with LOCK:
+        z = CONFIG.setdefault("zulip", {})
+        z["site"] = str(d.get("site", "")).strip()
+        z["stream"] = str(d.get("stream") or "feedel").strip()
+        z["streams"] = {k: str((d.get("streams") or {}).get(k, "")).strip() for k in KINDS}
+        z["extra_streams"] = parse_streams(d.get("extra_streams") or [])
+        z["recs_stream"] = str(d.get("recs_stream") or "recommendations").strip()
+        z["invite"] = str(d.get("invite", "")).strip()
+        z["organizer"] = str(d.get("organizer", "")).strip()
+        save_config()
+    return {"ok": True, "site": z["site"], "realm": d.get("realm", ""), "invite": z["invite"], "organizer": z["organizer"],
+            "streams": zulip_streams()}
+
+def zulip_stream_ids(names):
+    r = zulip_request("/streams", params={"include_subscribed": "true", "include_public": "true"})
+    by = {s.get("name"): s.get("stream_id") for s in r.get("streams", [])}
+    return [by[n] for n in names if n in by], [n for n in names if n not in by]
+
+def zulip_invite_link():
+    """A reusable invitation link that lands new members in the group's streams. Needs invitation rights on the
+    Zulip; the link is kept in settings so the setup code can carry it."""
+    ids, missing = zulip_stream_ids(zulip_streams())
+    r = zulip_request("/invites/multiuse", {"invite_expires_in_minutes": json.dumps(None), "invite_as": 400,
+                                           "stream_ids": json.dumps(ids), "include_realm_default_subscriptions": "true"})
+    link = r.get("invite_link", "")
+    if link:
+        with LOCK:
+            CONFIG.setdefault("zulip", {})["invite"] = link
+            save_config()
+    return {"ok": True, "invite": link, "missing_streams": missing}
+
+def zulip_invite_emails(emails):
+    """Have Zulip e-mail invitations to these addresses, subscribing them to the group's streams on arrival."""
+    emails = [e.strip() for e in re.split(r"[\s,;]+", emails or "") if "@" in e]
+    if not emails:
+        raise RuntimeError("no e-mail addresses given")
+    ids, missing = zulip_stream_ids(zulip_streams())
+    zulip_request("/invites", {"invitee_emails": ",".join(emails), "stream_ids": json.dumps(ids), "invite_as": 400,
+                               "invite_expires_in_minutes": json.dumps(None), "include_realm_default_subscriptions": "true"})
+    return {"ok": True, "sent": emails, "missing_streams": missing}
+
+def zulip_subscribe_all():
+    """Subscribe me to every stream the group uses (creating the ones that do not exist yet, when allowed)."""
+    names = zulip_streams()
+    r = zulip_request("/users/me/subscriptions", {"subscriptions": json.dumps([{"name": n} for n in names])})
+    return {"ok": True, "subscribed": list((r.get("subscribed") or {}).values())[0] if r.get("subscribed") else [],
+            "already": list((r.get("already_subscribed") or {}).values())[0] if r.get("already_subscribed") else [],
+            "unauthorized": r.get("unauthorized") or [], "streams": names}
 
 def item_link(it):
     k = it.get("kind")
@@ -2731,7 +2868,7 @@ def rec_item_for(key, link):
     return cached
 
 def resolve_rec_items():
-    """Resolve recommended links quietfeed has never seen, once each, in the background."""
+    """Resolve recommended links feedel has never seen, once each, in the background."""
     for r in recommendations():
         if r.get("link") and rec_item_for(r["key"], r["link"]) is None:
             try:
@@ -2788,7 +2925,7 @@ def zulip_share(item, note="", topic="", stream="", recommend=False, to=()):
     return {"ok": True, "id": r.get("id"), "stream": stream, "topic": topic}
 
 def topics_with_items(topics):
-    """Attach to each topic the item it is about, when quietfeed has it (feed, inbox or library)."""
+    """Attach to each topic the item it is about, when feedel has it (feed, inbox or library)."""
     by_key = {}
     with LOCK:
         pool = STATE["items"] + inbox_list() + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]
@@ -2834,7 +2971,7 @@ def window_available():
     return False
 
 def show_running_window(port, link=None):
-    """Second launch (or the link handler) while quietfeed is already running: ask that instance to show its window.
+    """Second launch (or the link handler) while feedel is already running: ask that instance to show its window.
     True when it did, False when it runs in a browser tab (or is an older version), so the caller opens the browser."""
     try:
         body = json.dumps({"link": link} if link else {}).encode()
@@ -2874,7 +3011,7 @@ def run_window(port, path=""):
     import webview, pystray
     url = f"http://localhost:{port}/{path}"
     w, h, x, y = window_geometry()
-    win = webview.create_window("quietfeed", url, width=w, height=h, x=x, y=y, min_size=(480, 360), text_select=True)
+    win = webview.create_window("feedel", url, width=w, height=h, x=x, y=y, min_size=(480, 360), text_select=True)
     saver = [None]
     geom = CONFIG.setdefault("window", {})
 
@@ -2929,7 +3066,7 @@ def run_window(port, path=""):
             pass
         threading.Timer(1.0, lambda: os._exit(0)).start()  # whatever the GUI loop does with that, the process ends
 
-    def on_closing():  # the close button hides the window; the tray menu is where quietfeed is quit
+    def on_closing():  # the close button hides the window; the tray menu is where feedel is quit
         if WINDOW.get("quitting") or not WINDOW.get("tray"):
             return True
         win.hide()
@@ -2938,13 +3075,21 @@ def run_window(port, path=""):
     win.events.resized += on_resized
     win.events.moved += on_moved
     win.events.closing += on_closing
-    WINDOW["show"], WINDOW["quit"] = show, quit_app
+    def teardown():  # for restart_self: close the tray icon and the window without the quit timer
+        WINDOW["quitting"] = True
+        for f in (lambda: WINDOW["tray"].stop() if WINDOW.get("tray") else None, win.destroy):
+            try:
+                f()
+            except Exception:
+                pass
+
+    WINDOW["show"], WINDOW["quit"], WINDOW["teardown"] = show, quit_app, teardown
 
     def start_tray():
         menu = pystray.Menu(pystray.MenuItem("open", lambda: show(), default=True),
                             pystray.MenuItem("refresh", lambda: threading.Thread(target=refresh, daemon=True).start()),
                             pystray.MenuItem("quit", lambda: quit_app()))
-        tray = pystray.Icon("quietfeed", tray_image(), "quietfeed", menu=menu)
+        tray = pystray.Icon("feedel", tray_image(), "feedel", menu=menu)
         try:
             if sys.platform == "darwin":
                 from AppKit import NSApplication
@@ -2953,9 +3098,9 @@ def run_window(port, path=""):
                 tray.run_detached()
             WINDOW["tray"] = tray
         except Exception as ex:
-            log(f"no tray icon ({ex}); closing the window quits quietfeed")
+            log(f"no tray icon ({ex}); closing the window quits feedel")
 
-    log("quietfeed in its own window (close hides it to the tray; the tray menu quits)")
+    log("feedel in its own window (close hides it to the tray; the tray menu quits)")
     webview.start(start_tray, private_mode=False, storage_path=os.path.join(HERE, "cache", "webview"))
     quit_app()  # the window is gone (quit from the tray, or closed with no tray): stop the server too
 
@@ -3015,6 +3160,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "error": st.get("error"), "on": zulip_ready(), "streams": zulip_status()["streams"]})
             if p.path == "/api/zulip/people":
                 return self._send(zulip_people())
+            if p.path == "/api/zulip/setup_code":
+                return self._send({"code": zulip_setup_code(), "realm": zulip_realm_name()})
             if p.path == "/api/tw/thread":
                 return self._send(tw_thread(q.get("url", [""])[0]))
             if p.path == "/api/zulip/topic":
@@ -3102,6 +3249,10 @@ class Handler(BaseHTTPRequestHandler):
                     mark([u], "seen", True)
                     return self._send(play_url(u), "text/plain")
                 return self._send(download_url(u), "text/plain")
+            if p.path == "/api/restart":
+                self._send("restarting", "text/plain")
+                restart_self()
+                return
             if p.path == "/api/quit":
                 self._send("bye", "text/plain")
                 threading.Timer(0.5, WINDOW.get("quit") or (lambda: os._exit(0))).start()
@@ -3122,6 +3273,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(update_settings(body))
             if p.path == "/api/zulip/test":
                 return self._send(zulip_test())
+            if p.path == "/api/zulip/apply_setup":
+                return self._send(zulip_apply_setup(str(body.get("code", ""))))
+            if p.path == "/api/zulip/invite/link":
+                return self._send(zulip_invite_link())
+            if p.path == "/api/zulip/invite/email":
+                return self._send(zulip_invite_emails(str(body.get("emails", ""))))
+            if p.path == "/api/zulip/subscribe":
+                return self._send(zulip_subscribe_all())
             if p.path == "/api/zulip/reply":
                 return self._send(zulip_reply(str(body.get("topic", "")), str(body.get("content", "")), body.get("stream") or None))
             if p.path == "/api/zulip/post":  # a new topic, from scratch, in one of the shown streams
@@ -3206,16 +3365,16 @@ if NEW_DB and migrate_legacy_json():
     STATE["items"] = load_items()
 normalize_subscriptions()
 
-USAGE = """usage: quietfeed.py [--port N] [--no-open] [--window | --browser] [--export] [--import FILE]
+USAGE = """usage: feedel.py [--port N] [--no-open] [--window | --browser] [--export] [--import FILE]
   --port N        listen on another port (default 8765)
   --no-open       do not open the page in a browser
   --window        show the page in its own window with a tray icon (needs pywebview, pystray and pillow; the browser otherwise)
   --browser       open the browser this once even when the "own window" setting is on
-  --export        print everything in quietfeed.db (settings, follows, seen/saved, cache, items) as JSON on stdout and exit
-  --import FILE   merge a JSON export, or an old config.json / state.json / cache.json, into quietfeed.db and exit
-                  (nothing is removed; stop a running quietfeed first)
-  --open URL                 show a video / post / paper link in quietfeed (anything else opens in your browser)
-  --register-handler         Windows: make quietfeed selectable as the default web browser (links from any app go through --open)
+  --export        print everything in feedel.db (settings, follows, seen/saved, cache, items) as JSON on stdout and exit
+  --import FILE   merge a JSON export, or an old config.json / state.json / cache.json, into feedel.db and exit
+                  (nothing is removed; stop a running feedel first)
+  --open URL                 show a video / post / paper link in feedel (anything else opens in your browser)
+  --register-handler         Windows: make feedel selectable as the default web browser (links from any app go through --open)
   --unregister-handler       undo that
 """
 
@@ -3238,7 +3397,7 @@ if __name__ == "__main__":
             sys.exit(2)
         with open(sys.argv[i + 1], encoding="utf-8") as f:
             n = import_data(json.load(f))
-        log(f"imported into quietfeed.db: {n['follows']} new follows, {n['seen']} seen, {n['saved']} saved, {n['items']} items")
+        log(f"imported into feedel.db: {n['follows']} new follows, {n['seen']} seen, {n['saved']} saved, {n['items']} items")
         sys.exit(0)
     if "--register-handler" in sys.argv or "--unregister-handler" in sys.argv:
         print(register_handler("--register-handler" in sys.argv))
@@ -3253,7 +3412,7 @@ if __name__ == "__main__":
             sys.exit(rc)
         # falls through: start the server, which takes the queued link and opens the page on the inbox
     if FIRST_RUN:
-        log("Created quietfeed.db — open the page and use the 'following' tab to import your subscriptions.")
+        log("Created feedel.db — open the page and use the 'following' tab to import your subscriptions.")
     port = PORT
     for i, a in enumerate(sys.argv):
         if a == "--port" and i + 1 < len(sys.argv):
@@ -3269,7 +3428,7 @@ if __name__ == "__main__":
             raise OSError("port in use")
         srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:  # already running (double-clicked twice): just show the page
-        log(f"port {port} is busy; quietfeed is probably already running — opening the page")
+        log(f"port {port} is busy; feedel is probably already running — opening the page")
         if "--no-open" not in sys.argv and not show_running_window(port):  # a running window comes back; else a browser tab
             import webbrowser
             webbrowser.open(f"http://localhost:{port}")
@@ -3277,7 +3436,7 @@ if __name__ == "__main__":
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=clipboard_loop, daemon=True).start()
     remember_default_browser()
-    log(f"quietfeed on http://localhost:{port}  (Ctrl+C to stop)")
+    log(f"feedel on http://localhost:{port}  (Ctrl+C to stop)")
     if STATE.get("queued_link"):
         threading.Thread(target=_safe_take, args=(STATE.pop("queued_link"), "link"), daemon=True).start()
         sys.argv.append("--inbox")
