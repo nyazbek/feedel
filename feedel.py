@@ -3075,9 +3075,13 @@ def run_window(port, path=""):
     win.events.resized += on_resized
     win.events.moved += on_moved
     win.events.closing += on_closing
-    def teardown():  # for restart_self: close the tray icon and the window without the quit timer
+    def teardown():
+        """For restart_self: free the port, drop the tray icon and hide the window, all quick; os._exit does the rest.
+        The port first: WebView2 takes a couple of seconds to unload when the process exits, and the restarted process
+        would find the port still busy and think feedel is already running."""
         WINDOW["quitting"] = True
-        for f in (lambda: WINDOW["tray"].stop() if WINDOW.get("tray") else None, win.destroy):
+        for f in (lambda: WINDOW["server"].server_close() if WINDOW.get("server") else None,
+                  lambda: WINDOW["tray"].stop() if WINDOW.get("tray") else None, win.hide):
             try:
                 f()
             except Exception:
@@ -3449,6 +3453,7 @@ if __name__ == "__main__":
             pass
     try:
         if in_window:  # the GUI loop needs the main thread; the server moves to another one
+            WINDOW["server"] = srv  # so a restart can free the port before this process is gone
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             try:
                 run_window(port, "#inbox" if "--inbox" in sys.argv else "")
