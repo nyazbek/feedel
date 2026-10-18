@@ -21,6 +21,7 @@
     <button data-v="library"><span class="ic">◇</span>library</button>
     <button data-v="following"><span class="ic">◎</span>following</button>
     <button data-v="friends"><span class="ic">◉</span>friends</button>
+    <button data-v="messages"><span class="ic">✉</span>messages<span class="cnt" id="msgcnt"></span></button>
   </nav>
   <div class="tools">
     <button id="theme" class="icon" title="theme: auto / light / dark">◐</button>
@@ -80,6 +81,9 @@
   <label class="block">other streams to show in <b>talk</b> (comma-separated; the share streams above are always there)
     <input id="z_extra" placeholder="general, reading-group"></label>
   <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
+  <div class="row"><b>Claude</b><span class="meta">this feedel is an MCP server at <code id="mcp_url">http://127.0.0.1:8765/mcp</code>; in a terminal:</span></div>
+  <pre class="cmd" id="mcp_cmd">claude mcp add --transport http feedel http://127.0.0.1:8765/mcp</pre>
+  <p class="meta">then Claude Code can read your feed, library and friends' discussions and leave you notes in <b>messages</b>. the <code>feedel-briefing</code> skill in the repo writes a daily briefing with tasks.</p>
   <div class="row"><button id="s_save" class="solid">save</button><span class="meta">per-source overrides live in the following tab</span>
     <span class="grow"></span><button id="quit" class="link">quit feedel</button></div>
 </div>
@@ -182,6 +186,22 @@
   <div class="bar"><button id="srcback" class="link">← back</button><span class="grow"></span><span class="meta" id="srcmeta"></span></div>
   <div id="srchead" class="panel"></div>
   <div id="srclist"></div>
+</section>
+
+<section id="view-messages" hidden>
+  <div class="bar">
+    <span class="meta" id="msg-state">…</span>
+    <span class="grow"></span>
+    <button id="msg-compose" class="link" hidden>write to a friend</button>
+    <button id="msg-refresh" class="link">check now</button>
+    <button id="msg-archived" class="link">show archived</button>
+  </div>
+  <div class="panel" id="msg-composer" hidden>
+    <div class="row"><b>to</b><select id="msg-to"></select></div>
+    <textarea id="msg-text" rows="3" placeholder="sent as a direct message on Zulip"></textarea>
+    <div class="row"><button id="msg-send" class="solid">send</button><button id="msg-cancel" class="link">cancel</button></div>
+  </div>
+  <div id="msglist"></div>
 </section>
 
 <section id="view-library" hidden>

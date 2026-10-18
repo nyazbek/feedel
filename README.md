@@ -112,6 +112,23 @@ Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e
 
 *Save* on anything puts it in the library, where it stays after it has left the feed. Each saved item takes **tags** and a **note**; the library filters by kind and tag and searches titles, authors, abstracts and notes. Seen and saved state live in `feedel.db`.
 
+## Messages: notes from Claude, direct messages from friends
+
+The **messages** tab is a small box with two kinds of mail:
+
+- **Direct messages** on the group's Zulip, both ways. They are pulled on every refresh (and when you open the tab); *reply* answers as a Zulip direct message, *write to a friend* starts one. Nothing else of Zulip is read here: streams stay in **talk**.
+- **Notes from Claude.** feedel is an [MCP](https://modelcontextprotocol.io) server at `http://127.0.0.1:8765/mcp` (the port you run it on). Add it to Claude Code once:
+
+  ```bash
+  claude mcp add --transport http feedel http://127.0.0.1:8765/mcp
+  ```
+
+  Then Claude can read your feed, library, what you follow and your friends' discussions, search arXiv through feedel, put a link in your inbox and leave you a note (`send_message`). Notes are Markdown; `- [ ] task` lines become checkboxes you can tick, and the links a note mentions show as cards with a *→ inbox* button so a video or post can be played without opening YouTube or X. A reply to a note stays in the box, where Claude reads it the next time it looks (`messages`). Claude never marks anything seen or saved unless you ask.
+
+  The repo ships a skill, `.claude/skills/feedel-briefing`, that writes a daily briefing: the few things worth your time, open discussions, and the tasks you did not tick yesterday, carried over. Run `/feedel-briefing` in Claude Code, or put it on a schedule (Claude Code's scheduled tasks, or a cron that runs `claude -p "/feedel-briefing"` with feedel open).
+
+  The endpoint only answers requests from this machine (it listens on 127.0.0.1 and refuses other origins). Opening `/mcp` in a browser explains itself.
+
 ## Settings (the gear)
 
 Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, hide Shorts from the feed, minimum video length, a per-source cap so one prolific channel cannot drown the rest, block words (`/regex/` allowed), and whether feedel opens in its own window. The theme button cycles auto / light / dark.
@@ -139,7 +156,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name feedel --a
 
 ## Files
 
-- `feedel.db` — one SQLite file with everything: settings, what you follow, seen and saved items with your tags and notes, the items themselves (kept 90 days after they leave their feed; saved ones forever) and the duration / Shorts cache. Back it up by copying it. `python feedel.py --export > backup.json` dumps it all as JSON; `python feedel.py --import backup.json` merges a dump (or an old `config.json` / `state.json` / `cache.json`) back in, adding and never removing. Open it with any SQLite tool to look around.
+- `feedel.db` — one SQLite file with everything: settings, what you follow, seen and saved items with your tags and notes, the messages tab, the items themselves (kept 90 days after they leave their feed; saved ones forever) and the duration / Shorts cache. Back it up by copying it. `python feedel.py --export > backup.json` dumps it all as JSON; `python feedel.py --import backup.json` merges a dump (or an old `config.json` / `state.json` / `cache.json`) back in, adding and never removing. Open it with any SQLite tool to look around.
 - `config.json`, `state.json`, `cache.json` — the files older versions used. They are migrated into `feedel.db` the first time this version runs and renamed `*.json.migrated`.
 - `cache/avatars/` — avatar images. Safe to delete.
 - `cache/webview/` — the window's own browser profile (theme choice and the like) when feedel runs in its own window. Safe to delete.

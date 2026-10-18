@@ -270,3 +270,37 @@ article.digest .desc span{display:block;color:var(--mut)}
 .streams label{font-size:13.5px;color:var(--mut)}
 .streams input{width:140px;font-size:13.5px;padding:3px 9px}
 #s_fallback_browser{width:min(100%,420px);font-size:13.5px;padding:4px 9px}
+
+/* messages: notes from Claude, direct messages from friends */
+.views .cnt{color:var(--faint);font-size:12px;margin-left:4px}
+.msgcard{padding:16px 18px;margin-bottom:12px;background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+.msgcard.unread{border-color:var(--line2);box-shadow:inset 3px 0 0 var(--acc)}
+.msgcard.mine{background:transparent}
+.msgcard .who{display:flex;align-items:baseline;gap:8px;font-size:13px;color:var(--mut);margin-bottom:6px}
+.msgcard .who .from{color:var(--fg);font-weight:600}
+.msgcard .who .from.claude{color:var(--acc)}
+.msgcard .who .mtitle{font:600 15px var(--serif);color:var(--fg)}
+.mbody{font:15px/1.55 var(--serif)}
+.mbody p{margin:6px 0}
+.mbody h3,.mbody h4,.mbody h5,.mbody h6{font:600 14px/1.3 var(--sans);margin:12px 0 4px;letter-spacing:.02em}
+.mbody ul,.mbody ol{margin:4px 0;padding-left:22px}
+.mbody li{margin:3px 0}
+.mbody li.task{list-style:none;margin-left:-20px}
+.mbody li.task label{display:flex;gap:8px;align-items:baseline;cursor:pointer}
+.mbody li.task input{accent-color:var(--acc)}
+.mbody li.task.done span{color:var(--faint);text-decoration:line-through}
+.mbody pre,.mbody code{font:13px/1.5 ui-monospace,Consolas,monospace;background:var(--soft);border-radius:var(--r2)}
+.mbody pre{padding:10px 12px;overflow:auto}
+.mbody code{padding:1px 5px}
+.mbody blockquote{margin:6px 0;padding:2px 12px;border-left:2px solid var(--line2);color:var(--mut)}
+.mbody.html p{margin:4px 0}
+.mlinks{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.mlink{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 10px;border:1px solid var(--line);border-radius:var(--pill);font-size:13px;background:var(--bg)}
+.mlink a{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}
+.mlink .k{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.mlink button{color:var(--acc);font-size:12px;padding:0 2px}
+.mreplies{margin:0 0 12px 24px;padding-left:14px;border-left:1px solid var(--line)}
+.mreplies .msgcard{margin-bottom:8px}
+.mreply textarea{margin-top:10px}
+pre.cmd{font:13px/1.5 ui-monospace,Consolas,monospace;background:var(--soft);border-radius:var(--r2);padding:8px 12px;margin:4px 0 8px;user-select:all;overflow:auto}
+#settings code{font:12.5px ui-monospace,Consolas,monospace;background:var(--soft);padding:1px 5px;border-radius:var(--r2)}

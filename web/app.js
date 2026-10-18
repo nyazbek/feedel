@@ -97,6 +97,7 @@ async function load(onlyIfChanged = false) {
   let d;
   try { d = await api('/api/items'); } catch (e) { toast('server not answering: ' + e.message); return; }
   pollWhileRefreshing(d.refreshing);
+  setMsgCount(d.messages_unread || 0);
   const sig = [d.refreshing, d.last_refresh, d.errors.length, d.inbox.length, d.items.map(i => i.id).join(',')].join('|');
   if (onlyIfChanged && sig === loadSig) return;  // nothing new yet: leave the page alone
   loadSig = sig; data = d;
@@ -141,11 +142,12 @@ function render() {
   captureDrafts();
   kwre = kwRegex();
   document.querySelectorAll('.views button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  ['feed', 'talk', 'library', 'following', 'source', 'friends'].forEach(v => $('#view-' + v).hidden = v !== view);
+  ['feed', 'talk', 'library', 'following', 'source', 'friends', 'messages'].forEach(v => $('#view-' + v).hidden = v !== view);
   if (!data) return;
   if (view === 'feed') renderFeed();
   else if (view === 'talk') renderTalk();
   else if (view === 'friends') renderFriends();
+  else if (view === 'messages') renderMessages();
   else if (view === 'library') renderLibrary();
   else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
@@ -1084,6 +1086,140 @@ async function importFiles(files) {
   for (const f of files) importText(await f.text(), f.name);
 }
 
+/* ------------------------------------------------------------ messages (notes from Claude, direct messages from friends) */
+
+let msgData = null, msgArchived = false, msgPeople = null;
+
+// a small Markdown renderer for Claude's notes: headings, emphasis, code, links, lists, task lists, quotes, paragraphs
+function md(src) {
+  const lines = String(src || '').replace(/\r/g, '').split('\n');
+  const out = []; let para = [], list = null, code = null, quote = [], n = 0;
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[^*\w])\*([^*]+)\*/g, '$1<i>$2</i>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  const flushP = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } };
+  const flushL = () => { if (list) { out.push(`<${list.tag}>${list.items.join('')}</${list.tag}>`); list = null; } };
+  const flushQ = () => { if (quote.length) { out.push(`<blockquote>${inline(quote.join(' '))}</blockquote>`); quote = []; } };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (code !== null) { if (/^```/.test(line)) { out.push(`<pre>${esc(code.join('\n'))}</pre>`); code = null; } else code.push(raw); n++; continue; }
+    if (/^```/.test(line)) { flushP(); flushL(); flushQ(); code = []; n++; continue; }
+    let m;
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) { flushP(); flushL(); flushQ(); out.push(`<h${m[1].length + 2}>${inline(m[2])}</h${m[1].length + 2}>`); }
+    else if ((m = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/))) {
+      flushP(); flushQ(); if (!list || list.tag !== 'ul') { flushL(); list = { tag: 'ul', items: [] }; }
+      const on = m[1] !== ' ';
+      list.items.push(`<li class="task${on ? ' done' : ''}"><label><input type="checkbox" data-line="${n}"${on ? ' checked' : ''}> <span>${inline(m[2])}</span></label></li>`);
+    }
+    else if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) { flushP(); flushQ(); if (!list || list.tag !== 'ul') { flushL(); list = { tag: 'ul', items: [] }; } list.items.push(`<li>${inline(m[1])}</li>`); }
+    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { flushP(); flushQ(); if (!list || list.tag !== 'ol') { flushL(); list = { tag: 'ol', items: [] }; } list.items.push(`<li>${inline(m[1])}</li>`); }
+    else if ((m = line.match(/^>\s?(.*)$/))) { flushP(); flushL(); quote.push(m[1]); }
+    else if (!line.trim()) { flushP(); flushL(); flushQ(); }
+    else { flushL(); flushQ(); para.push(line); }
+    n++;
+  }
+  flushP(); flushL(); flushQ();
+  if (code !== null) out.push(`<pre>${esc(code.join('\n'))}</pre>`);
+  return out.join('');
+}
+
+function msgFrom(m) {
+  if (m.channel === 'claude') return '<span class="from claude">✦ Claude</span>';
+  if (m.channel === 'me') { const to = (m.meta && m.meta.to || []).map(p => p.name || p.email).filter(Boolean).join(', '); return `<span class="from">you${to ? ' → ' + esc(to) : ''}</span>`; }
+  return `<span class="from">${esc(m.sender || 'a friend')}</span>`;
+}
+
+function msgCard(m) {
+  const body = (m.meta && m.meta.html) ? `<div class="mbody html">${m.body}</div>` : `<div class="mbody">${md(m.body)}</div>`;
+  const links = (m.links || []).length ? `<div class="mlinks">${m.links.map(l => `<span class="mlink"><a href="${esc(l.url)}" target="_blank" rel="noopener">${l.kind ? `<span class="k">${esc(l.kind)}</span> ` : ''}${esc(l.title || l.url.replace(/^https?:\/\//, '').slice(0, 60))}</a><button data-a="msg-inbox" data-url="${esc(l.url)}" title="put it in your inbox, where it can be played">→ inbox</button></span>`).join('')}</div>` : '';
+  const canReply = m.channel !== 'me';
+  const acts = `<div class="acts">${canReply ? '<button data-a="msg-reply">reply</button>' : ''}${m.channel !== 'me' ? `<button data-a="msg-read">${m.read ? 'mark unread' : 'mark read'}</button>` : ''}<button data-a="msg-archive" class="faint">${m.archived ? 'unarchive' : 'archive'}</button></div>`;
+  return `<div class="msgcard${m.read || m.channel === 'me' ? '' : ' unread'}${m.channel === 'me' ? ' mine' : ''}" data-mid="${m.id}">
+    <div class="who">${msgFrom(m)}${m.title ? ` <b class="mtitle">${esc(m.title)}</b>` : ''}<span class="grow"></span><span class="meta">${ago(m.ts)} ago</span></div>
+    ${body}${links}${acts}</div>`;
+}
+
+async function renderMessages() {
+  const list = $('#msglist');
+  $('#msg-archived').textContent = msgArchived ? 'hide archived' : 'show archived';
+  try {
+    msgData = await api('/api/messages?refresh=1' + (msgArchived ? '&archived=1' : ''));
+  } catch (e) { list.innerHTML = `<span class="warn">${esc(e.message)}</span>`; return; }
+  const z = msgData.zulip;
+  $('#msg-compose').hidden = !z;
+  $('#msg-state').innerHTML = (z ? `direct messages on Zulip land here${msgData.dm_error ? ` <span class="warn">(last check failed: ${esc(msgData.dm_error)})</span>` : ''}; ` : 'connect a group in the friends tab and your friends\' direct messages land here too; ') +
+    'Claude leaves notes here when you connect it (settings → Claude).';
+  setMsgCount(msgData.unread);
+  if (!msgData.messages.length) { list.innerHTML = '<p class="meta">nothing here yet.</p>'; return; }
+  // replies sit under what they answer; the rest newest first
+  const byId = {}, roots = [];
+  msgData.messages.forEach(m => { byId[m.id] = m; m.children = []; });
+  msgData.messages.forEach(m => { if (m.reply_to && byId[m.reply_to]) byId[m.reply_to].children.push(m); else roots.push(m); });
+  const tree = m => msgCard(m) + (m.children.length ? `<div class="mreplies">${m.children.sort((a, b) => a.ts - b.ts).map(tree).join('')}</div>` : '');
+  list.innerHTML = roots.map(tree).join('');
+}
+
+// the settings panel shows the MCP address of this very instance (the port can differ from the default)
+(function mcpAddress() { const u = location.origin + '/mcp'; const e = $('#mcp_url'), c = $('#mcp_cmd'); if (e) e.textContent = u; if (c) c.textContent = 'claude mcp add --transport http feedel ' + u; })();
+function setMsgCount(n) { const e = $('#msgcnt'); if (e) e.textContent = n ? ` ${n}` : ''; }
+
+async function msgClick(b) {
+  const card = b.closest('.msgcard'); const mid = card ? +card.dataset.mid : null;
+  const m = mid && msgData ? msgData.messages.find(x => x.id === mid) : null;
+  if (b.id === 'msg-refresh') { b.disabled = true; try { const r = await api('/api/messages/refresh', {}); if (r.error) toast(r.error, 5000); } finally { b.disabled = false; } await renderMessages(); return; }
+  if (b.id === 'msg-archived') { msgArchived = !msgArchived; await renderMessages(); return; }
+  if (b.id === 'msg-compose') {
+    $('#msg-composer').hidden = false; $('#msg-text').focus();
+    if (!msgPeople) { try { msgPeople = await api('/api/zulip/people'); } catch (e) { toast(e.message); msgPeople = []; } }
+    $('#msg-to').innerHTML = msgPeople.length ? msgPeople.map(p => `<option value="${esc(p.email)}">${esc(p.name)}</option>`).join('') : '<option value="">nobody else in the group yet</option>';
+    return;
+  }
+  if (b.id === 'msg-cancel') { $('#msg-composer').hidden = true; return; }
+  if (b.id === 'msg-send') {
+    const to = $('#msg-to').value, text = $('#msg-text').value.trim();
+    if (!to || !text) { toast(to ? 'write something first' : 'choose whom to write to'); return; }
+    b.disabled = true;
+    try { await api('/api/messages/send', { text, to: [to] }); $('#msg-text').value = ''; $('#msg-composer').hidden = true; toast('sent'); await renderMessages(); }
+    catch (e) { toast(e.message, 5000); } finally { b.disabled = false; }
+    return;
+  }
+  if (b.dataset.a === 'msg-inbox') { try { await api('/api/inbox', { url: b.dataset.url, via: 'message' }); toast('in your inbox'); } catch (e) { toast(e.message); } return; }
+  if (!m) return;
+  if (b.dataset.a === 'msg-read') { await api('/api/messages/update', { id: mid, read: !m.read }); await renderMessages(); return; }
+  if (b.dataset.a === 'msg-archive') { await api('/api/messages/update', { id: mid, archived: !m.archived }); await renderMessages(); return; }
+  if (b.dataset.a === 'msg-reply') {
+    let box = card.querySelector('.mreply');
+    if (box) { box.remove(); return; }
+    box = document.createElement('div'); box.className = 'mreply';
+    const who = m.channel === 'claude' ? 'Claude reads this the next time it looks at your messages' : `a direct message to ${esc(m.sender || 'them')} on Zulip`;
+    box.innerHTML = `<textarea rows="3" placeholder="${who}"></textarea><div class="row"><button class="solid" data-a="msg-reply-send">send</button><span class="meta">${who}</span></div>`;
+    card.appendChild(box); box.querySelector('textarea').focus();
+    return;
+  }
+  if (b.dataset.a === 'msg-reply-send') {
+    const ta = card.querySelector('.mreply textarea'); const text = ta.value.trim();
+    if (!text) return;
+    b.disabled = true;
+    try { await api('/api/messages/send', { text, reply_to: mid }); if (!m.read) await api('/api/messages/update', { id: mid, read: true }); await renderMessages(); }
+    catch (e) { toast(e.message, 5000); b.disabled = false; }
+  }
+}
+
+// ticking a task in one of Claude's notes rewrites that line of the note
+document.addEventListener('change', async e => {
+  const cb = e.target;
+  if (!(cb instanceof HTMLInputElement) || cb.type !== 'checkbox' || cb.dataset.line === undefined) return;
+  const card = cb.closest('.msgcard'); if (!card || !msgData) return;
+  const m = msgData.messages.find(x => x.id === +card.dataset.mid); if (!m) return;
+  const lines = m.body.replace(/\r/g, '').split('\n'); const i = +cb.dataset.line;
+  lines[i] = cb.checked ? lines[i].replace(/\[ \]/, '[x]') : lines[i].replace(/\[[xX]\]/, '[ ]');
+  try { const u = await api('/api/messages/update', { id: m.id, body: lines.join('\n') }); m.body = u.body; cb.closest('li').classList.toggle('done', cb.checked); }
+  catch (err) { toast(err.message); cb.checked = !cb.checked; }
+});
+
 /* ------------------------------------------------------------ events */
 
 document.addEventListener('click', async e => {
@@ -1091,6 +1227,7 @@ document.addEventListener('click', async e => {
   if (!b) return;
   if (b.dataset.v) { view = b.dataset.v; location.hash = view === 'feed' ? '' : view; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
   if (b.id && b.id.startsWith('fr-')) { friendsClick(b); return; }
+  if ((b.id && b.id.startsWith('msg-')) || (b.dataset.a && b.dataset.a.startsWith('msg-'))) { msgClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
   if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; ytResults = null; render(); return; }
@@ -1290,6 +1427,7 @@ if (location.hash === '#following') view = 'following';
 if (location.hash === '#library') view = 'library';
 if (location.hash === '#friends') view = 'friends';
 if (location.hash === '#talk') view = 'talk';
+if (location.hash === '#messages') view = 'messages';
 if (location.hash === '#inbox') kindFilter = 'inbox';
 const srcHash = location.hash.match(/^#source\/(\w+)\/(.+)$/);
 if (srcHash) setTimeout(() => openSource(srcHash[1], decodeURIComponent(srcHash[2])), 0);

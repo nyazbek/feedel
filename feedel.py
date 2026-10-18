@@ -25,7 +25,7 @@ if len(sys.argv) > 1 and any(a in ("-J", "-j", "--dump-single-json", "--dump-jso
     import yt_dlp
     sys.exit(yt_dlp.main())
 
-import base64, csv, hashlib, html, io, json, os, re, shutil, sqlite3, subprocess, threading, time
+import base64, csv, hashlib, html, io, json, os, re, shutil, sqlite3, subprocess, threading, time, uuid
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -266,6 +266,12 @@ CREATE TABLE IF NOT EXISTS unfollowed (  -- an unfollow is a decision: syncs and
 CREATE TABLE IF NOT EXISTS inbox (  -- links handed to feedel from elsewhere (clipboard, the link box, the URL handler)
     user_id INTEGER NOT NULL REFERENCES users(id), url TEXT NOT NULL, item_json TEXT NOT NULL, via TEXT NOT NULL DEFAULT '',
     added INTEGER NOT NULL, PRIMARY KEY (user_id, url));
+CREATE TABLE IF NOT EXISTS messages (  -- the messages tab: notes from Claude (through /mcp), friends' direct messages (Zulip), your replies
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id),
+    channel TEXT NOT NULL,  -- 'claude' | 'zulip' | 'me'
+    ext_id TEXT NOT NULL DEFAULT '', sender TEXT NOT NULL DEFAULT '', sender_email TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', links TEXT NOT NULL DEFAULT '[]', meta TEXT NOT NULL DEFAULT '{}',
+    ts INTEGER NOT NULL, read_at INTEGER, reply_to INTEGER, archived INTEGER NOT NULL DEFAULT 0);
 """
 
 def open_db():
@@ -1677,6 +1683,7 @@ def refresh(force=False):
         log("refreshing…" + (" (everything, on request)" if force else ""))
         sync_accounts(force)
         threading.Thread(target=zulip_fetch_stream, daemon=True).start()
+        threading.Thread(target=zulip_fetch_dms, daemon=True).start()
         errors, counts, done_at = [], Counter(), {}
         with LOCK:
             newest = newest_by_source()
@@ -1832,6 +1839,7 @@ def items_payload():
                 "arxiv_authors": [s["name"] for s in sub_list("arxiv") if s.get("qtype") == "author"],
                 "arxiv_keywords": [s["name"] for s in sub_list("arxiv") if s.get("qtype") == "search"],
                 "inbox": inbox_list(),
+                "messages_unread": msg_unread(),
                 "followed": {k: [s.get("id") for s in sub_list(k)] for k in KINDS},
                 "discussions": discussions_payload(),
                 "recs": recs_payload(),
@@ -3346,6 +3354,360 @@ def topics_with_items(topics):
         t["item"] = next((by_key[k] for k in t["keys"] if k in by_key), None)
     return topics
 
+# ---------------------------------------------------------------- messages (a box for notes from Claude and from friends)
+
+MSG_LIMIT = 300
+
+def msg_row(r):
+    d = dict(r)
+    d["links"] = json.loads(d.get("links") or "[]")
+    d["meta"] = json.loads(d.get("meta") or "{}")
+    d["read"] = d.get("read_at") is not None
+    return d
+
+def msg_add(channel, body, title="", links=(), sender="", sender_email="", ext_id="", ts=None, reply_to=None, meta=None, read=False):
+    """Store one message. channel: 'claude' (left through the MCP endpoint), 'zulip' (a friend's direct message),
+    'me' (your reply or your own direct message). A Zulip message is stored once, by its id."""
+    body = str(body or "").strip()
+    if not body and not title:
+        raise RuntimeError("the message is empty")
+    now = int(time.time())
+    with tx() as db:
+        if ext_id:
+            r = db.execute("SELECT id FROM messages WHERE user_id = ? AND channel IN ('zulip', 'me') AND ext_id = ?", (USER_ID, ext_id)).fetchone()
+            if r:
+                return msg_row(db.execute("SELECT * FROM messages WHERE id = ?", (r["id"],)).fetchone())
+        cur = db.execute("INSERT INTO messages (user_id, channel, ext_id, sender, sender_email, title, body, links, ts, read_at, reply_to, meta) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (USER_ID, channel, ext_id or "", sender or "", (sender_email or "").lower(), str(title or "")[:200], body[:20000],
+                          json.dumps([str(l) for l in links or []][:30]), int(ts or now), now if (read or channel == "me") else None, reply_to,
+                          json.dumps(meta or {})))
+        return msg_row(db.execute("SELECT * FROM messages WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+def msg_list(include_archived=False, limit=MSG_LIMIT):
+    with LOCK:
+        rows = DB.execute("SELECT * FROM messages WHERE user_id = ? " + ("" if include_archived else "AND archived = 0 ") +
+                          "ORDER BY ts DESC, id DESC LIMIT ?", (USER_ID, limit)).fetchall()
+    return [msg_row(r) for r in rows]
+
+def msg_update(mid, read=None, archived=None, body=None):
+    with tx() as db:
+        if read is not None:
+            db.execute("UPDATE messages SET read_at = ? WHERE id = ? AND user_id = ?", (int(time.time()) if read else None, mid, USER_ID))
+        if archived is not None:
+            db.execute("UPDATE messages SET archived = ? WHERE id = ? AND user_id = ?", (1 if archived else 0, mid, USER_ID))
+        if body is not None:
+            db.execute("UPDATE messages SET body = ? WHERE id = ? AND user_id = ?", (str(body)[:20000], mid, USER_ID))
+        r = db.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
+    if not r:
+        raise RuntimeError("no such message")
+    return msg_row(r)
+
+def msg_unread():
+    with LOCK:
+        return DB.execute("SELECT COUNT(*) FROM messages WHERE user_id = ? AND archived = 0 AND read_at IS NULL AND channel != 'me'", (USER_ID,)).fetchone()[0]
+
+def link_titles(links):
+    """What the feed knows about each link: kind, title and author when the item is in the feed, the library or the inbox."""
+    out = []
+    known = {}
+    with LOCK:
+        pool = list(STATE["items"]) + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]
+    for it in pool:
+        for u in (it.get("link"), it.get("id")):
+            k = canon_key(u) if u else None
+            if k and k not in known:
+                known[k] = it
+    for u in links:
+        it = known.get(canon_key(u) or "")
+        out.append({"url": u, "kind": it["kind"], "title": it.get("title", ""), "author": it.get("author", "")} if it else {"url": u})
+    return out
+
+def msg_payload(include_archived=False):
+    msgs = msg_list(include_archived)
+    for m in msgs:
+        m["links"] = link_titles(m["links"])
+    return {"messages": msgs, "unread": msg_unread(), "zulip": zulip_ready(), "dm_error": STATE.get("dm_error"), "dm_at": STATE.get("dm_at")}
+
+def zulip_fetch_dms():
+    """Your direct messages on Zulip (both ways), into the box; the 20 most recent conversations' last 100 messages."""
+    if not zulip_ready():
+        return 0
+    site, email, _, _ = zulip_cfg()
+    try:
+        me = zulip_me()
+        r = zulip_request("/messages", params={"anchor": "newest", "num_before": 100, "num_after": 0, "apply_markdown": "true",
+                                                "narrow": json.dumps([{"operator": "is", "operand": "dm"}])})
+    except Exception as ex:
+        if "dm" in str(ex) and "operand" in str(ex).lower():  # older servers call it "private"
+            try:
+                r = zulip_request("/messages", params={"anchor": "newest", "num_before": 100, "num_after": 0, "apply_markdown": "true",
+                                                        "narrow": json.dumps([{"operator": "is", "operand": "private"}])})
+            except Exception as ex2:
+                STATE["dm_error"] = str(ex2)
+                return 0
+        else:
+            STATE["dm_error"] = str(ex)
+            return 0
+    n = 0
+    for m in r.get("messages", []):
+        mine = (m.get("sender_email") or "").lower() == email.lower() or m.get("sender_id") == me.get("user_id")
+        people = [p for p in (m.get("display_recipient") or []) if isinstance(p, dict)]
+        others = [{"name": p.get("full_name", ""), "email": (p.get("email") or "").lower()} for p in people if (p.get("email") or "").lower() != email.lower()]
+        content = zulip_clean(m.get("content", ""), site)
+        links = [html.unescape(h) for h in re.findall(r'href="([^"]+)"', content)]
+        before = msg_unread()
+        msg_add("me" if mine else "zulip", content, sender=m.get("sender_full_name", ""), sender_email=m.get("sender_email", ""),
+                ext_id=str(m.get("id")), ts=m.get("timestamp"), links=[l for l in links if canon_key(l)],
+                meta={"html": True, "to": others, "read": "read" in (m.get("flags") or [])}, read="read" in (m.get("flags") or []))
+        n += 1 if msg_unread() != before else 0
+    STATE["dm_error"] = None
+    STATE["dm_at"] = int(time.time())
+    return n
+
+def msg_send(text, to=(), reply_to=None, title=""):
+    """A message from you: to friends it goes as a Zulip direct message (to the people given, or to the sender of the
+    message replied to); a reply to a Claude note is kept here for Claude to read the next time it asks."""
+    text = str(text or "").strip()
+    if not text:
+        raise RuntimeError("nothing to send")
+    parent = None
+    if reply_to:
+        with LOCK:
+            r = DB.execute("SELECT * FROM messages WHERE id = ? AND user_id = ?", (reply_to, USER_ID)).fetchone()
+        parent = msg_row(r) if r else None
+    emails = [str(e).strip().lower() for e in (to or []) if str(e).strip()]
+    if parent and parent["channel"] in ("zulip", "me") and not emails:
+        emails = [parent["sender_email"]] if parent["channel"] == "zulip" else [p["email"] for p in parent["meta"].get("to", [])]
+        emails = [e for e in emails if e]
+    if emails:
+        r = zulip_request("/messages", {"type": "direct", "to": json.dumps(emails), "content": text})
+        names = []
+        try:
+            names = [p["name"] for p in zulip_people() if p["email"].lower() in emails]
+        except Exception:
+            pass
+        return msg_add("me", html.escape(text).replace("\n", "<br>"), ext_id=str(r.get("id")), reply_to=reply_to, links=[u for u in re.findall(r"https?://\S+", text) if canon_key(u)],
+                       meta={"html": True, "to": [{"name": n, "email": e} for n, e in zip(names + [""] * len(emails), emails)]})
+    if parent is None or parent["channel"] != "claude":
+        raise RuntimeError("choose whom to send it to")
+    return msg_add("me", text, title=title, reply_to=reply_to, links=[u for u in re.findall(r"https?://\S+", text) if canon_key(u)], meta={"to": [{"name": "Claude", "email": ""}]})
+
+# ---------------------------------------------------------------- MCP (so Claude can read the feed and leave you notes)
+
+MCP_SESSION = uuid.uuid4().hex
+
+def mcp_item(it):
+    """A feed item as a tool result: enough to judge it, nothing the page needs only for rendering."""
+    link = it.get("link") or it.get("id") or ""
+    if it["kind"] == "yt" and not link.startswith("http"):
+        link = "https://www.youtube.com/watch?v=" + link
+    out = {"kind": it["kind"], "id": it.get("id"), "link": link, "title": it.get("title", ""),
+           "author": it.get("author") or it.get("channel") or "", "when": datetime.fromtimestamp(it.get("ts") or 0, timezone.utc).strftime("%Y-%m-%d %H:%M")}
+    if it.get("dur"):
+        out["minutes"] = round(it["dur"] / 60)
+    if it.get("desc"):
+        out["summary"] = strip_html(it["desc"], 300)
+    if it.get("tags"):
+        out["tags"] = it["tags"]
+    if it["kind"] == "arxiv":
+        out.update({k: it[k] for k in ("authors", "categories", "announce_type") if k in it})
+    if it.get("id") in SEEN_STATE["seen"]:
+        out["seen"] = True
+    if it.get("id") in SEEN_STATE["saved"]:
+        out["saved"] = True
+    return out
+
+def mcp_feed(a):
+    kind = (a.get("kind") or "").strip()
+    q = (a.get("query") or "").strip().lower()
+    hours = float(a.get("hours") or 0)
+    limit = max(1, min(int(a.get("limit") or 40), 200))
+    items = visible_items()
+    if kind:
+        items = [i for i in items if i["kind"] == kind]
+    if hours:
+        items = [i for i in items if (i.get("ts") or 0) >= time.time() - hours * 3600]
+    if a.get("unseen_only"):
+        items = [i for i in items if i.get("id") not in SEEN_STATE["seen"]]
+    if q:
+        items = [i for i in items if q in (i.get("title", "") + " " + strip_html(i.get("desc", ""), 2000) + " " + str(i.get("author", ""))).lower()]
+    items.sort(key=lambda i: i.get("ts") or 0, reverse=True)
+    return {"count": len(items), "items": [mcp_item(i) for i in items[:limit]]}
+
+def mcp_library(a):
+    q = (a.get("query") or "").strip().lower()
+    tag = (a.get("tag") or "").strip().lower()
+    limit = max(1, min(int(a.get("limit") or 50), 300))
+    out = []
+    with LOCK:
+        saved = [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]
+    for it in sorted(saved, key=lambda v: v.get("saved_at") or 0, reverse=True):
+        if tag and tag not in [t.lower() for t in (it.get("tags_mine") or []) + (it.get("tags") or [])]:
+            continue
+        if q and q not in (it.get("title", "") + " " + (it.get("note") or "") + " " + str(it.get("author", ""))).lower():
+            continue
+        d = mcp_item(it)
+        d["saved_on"] = datetime.fromtimestamp(it.get("saved_at") or 0, timezone.utc).strftime("%Y-%m-%d")
+        if it.get("tags_mine"):
+            d["my_tags"] = it["tags_mine"]
+        if it.get("note"):
+            d["note"] = it["note"]
+        out.append(d)
+    return {"count": len(out), "items": out[:limit]}
+
+def mcp_following(a):
+    kind = (a.get("kind") or "").strip()
+    out = []
+    for k, s in all_subs():
+        if kind and k != kind:
+            continue
+        out.append({"kind": k, "id": s.get("id"), "name": s.get("name") or s.get("id"), "tags": s.get("tags", []), "muted": bool(s.get("muted"))})
+    return {"count": len(out), "following": out}
+
+def mcp_discussions(a):
+    if not zulip_ready():
+        return {"on": False, "note": "Zulip is not set up in feedel, so there are no discussions to read"}
+    limit = max(1, min(int(a.get("limit") or 30), 100))
+    topics = zulip_topics((a.get("stream") or "").strip() or None)[:limit]
+    return {"on": True, "topics": [{"stream": t["stream"], "topic": t["topic"], "messages": t["count"], "unread": t["new"], "people": t["people"],
+                                    "last": t["last"], "last_by": t["last_who"], "about": t.get("keys", [])[:5],
+                                    "last_at": datetime.fromtimestamp(t["last_ts"], timezone.utc).strftime("%Y-%m-%d %H:%M")} for t in topics]}
+
+def mcp_messages(a):
+    limit = max(1, min(int(a.get("limit") or 30), 200))
+    msgs = msg_list(bool(a.get("include_archived")))
+    if a.get("unread_only"):
+        msgs = [m for m in msgs if not m["read"] and m["channel"] != "me"]
+    out = []
+    for m in msgs[:limit]:
+        body = strip_html(m["body"], 4000) if m["meta"].get("html") else m["body"]
+        out.append({"id": m["id"], "from": "Claude" if m["channel"] == "claude" else ("you" if m["channel"] == "me" else m["sender"] or "a friend"),
+                    "channel": m["channel"], "to": [p.get("name") or p.get("email") for p in m["meta"].get("to", [])] or None,
+                    "title": m["title"], "body": body, "links": m["links"], "read": m["read"], "reply_to": m["reply_to"],
+                    "at": datetime.fromtimestamp(m["ts"], timezone.utc).strftime("%Y-%m-%d %H:%M")})
+    return {"unread": msg_unread(), "messages": out}
+
+def mcp_send_message(a):
+    body = str(a.get("body") or "").strip()
+    if not body:
+        raise RuntimeError("body is required")
+    links = [str(u) for u in (a.get("links") or []) if str(u).startswith("http")]
+    m = msg_add("claude", body, title=str(a.get("title") or "")[:200], links=links, sender="Claude", reply_to=a.get("reply_to"))
+    return {"ok": True, "id": m["id"], "note": "left in the messages tab of feedel"}
+
+def mcp_add_link(a):
+    u = str(a.get("url") or "").strip()
+    if not link_kind(u):
+        raise RuntimeError("that does not look like a link feedel can take (a YouTube video or channel, an X post, a web page or feed, an arXiv paper)")
+    return inbox_take(u, "claude")
+
+def mcp_mark(a):
+    ids = [str(i) for i in (a.get("ids") or []) if str(i)]
+    if not ids:
+        raise RuntimeError("ids is required")
+    done = {}
+    if "seen" in a:
+        mark(ids, "seen", bool(a["seen"]))
+        done["seen"] = bool(a["seen"])
+    if "saved" in a:
+        if a["saved"]:
+            items = {i.get("id"): i for i in visible_items()}
+            for i in ids:
+                mark([i], "saved", True, item=items.get(i) or {"id": i, "kind": link_kind(i) or "rss", "title": i, "link": i},
+                     patch={k: a[k] for k in ("tags", "note") if k in a})
+        else:
+            mark(ids, "saved", False)
+        done["saved"] = bool(a["saved"])
+    return {"ok": True, "ids": ids, **done}
+
+def mcp_search_papers(a):
+    q = str(a.get("query") or "").strip()
+    if not q:
+        raise RuntimeError("query is required")
+    res = arxiv_search(q=q, author=str(a.get("author") or ""), max_results=max(1, min(int(a.get("limit") or 20), 50)))
+    items = res.get("items", res) if isinstance(res, dict) else res
+    return {"count": len(items), "items": [mcp_item(i) for i in items]}
+
+MCP_TOOLS = [
+    {"name": "feed", "fn": mcp_feed,
+     "description": "What is in the person's feed right now: videos (kind yt), X posts (tw), blog and newsletter posts (rss) and papers (arxiv), "
+                    "newest first, after their own filters (muted sources, hidden Shorts, blocked words). Filter by kind, a text query, "
+                    "the last N hours, or only what they have not seen yet.",
+     "schema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["yt", "tw", "rss", "arxiv"]}, "query": {"type": "string"},
+                                                "hours": {"type": "number", "description": "only items from the last N hours"},
+                                                "unseen_only": {"type": "boolean"}, "limit": {"type": "integer", "default": 40}}}},
+    {"name": "library", "fn": mcp_library,
+     "description": "What the person set aside (saved items) with their own tags and notes, newest first. Filter by text or tag.",
+     "schema": {"type": "object", "properties": {"query": {"type": "string"}, "tag": {"type": "string"}, "limit": {"type": "integer", "default": 50}}}},
+    {"name": "following", "fn": mcp_following,
+     "description": "The channels, accounts, feeds and arXiv queries the person follows, with their tags.",
+     "schema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["yt", "tw", "rss", "arxiv"]}}}},
+    {"name": "discussions", "fn": mcp_discussions,
+     "description": "The discussions among the person's friends (Zulip topics the app shows in its talk tab): who said what last and how much is unread.",
+     "schema": {"type": "object", "properties": {"stream": {"type": "string"}, "limit": {"type": "integer", "default": 30}}}},
+    {"name": "messages", "fn": mcp_messages,
+     "description": "The messages tab: notes Claude left before, direct messages from friends, and the person's replies (channel 'me'). "
+                    "Read it before writing a new note, so you can follow up on their replies and on unfinished tasks.",
+     "schema": {"type": "object", "properties": {"unread_only": {"type": "boolean"}, "include_archived": {"type": "boolean"}, "limit": {"type": "integer", "default": 30}}}},
+    {"name": "send_message", "fn": mcp_send_message,
+     "description": "Leave the person a note in the messages tab of feedel. Markdown body; '- [ ] task' lines become checkboxes they can tick. "
+                    "Put the links you refer to in `links` so the app shows them as cards.",
+     "schema": {"type": "object", "required": ["body"], "properties": {"title": {"type": "string"}, "body": {"type": "string"},
+                                                                       "links": {"type": "array", "items": {"type": "string"}},
+                                                                       "reply_to": {"type": "integer", "description": "id of the message this answers"}}}},
+    {"name": "add_link", "fn": mcp_add_link,
+     "description": "Put a link into the person's inbox (a YouTube video, an X post, a web page, an arXiv paper), the same box links from WhatsApp land in.",
+     "schema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}}}},
+    {"name": "mark", "fn": mcp_mark,
+     "description": "Mark feed items (by their id from `feed`) as seen or unseen, or save them to the library (optionally with tags and a note). Only on the person's request.",
+     "schema": {"type": "object", "required": ["ids"], "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "seen": {"type": "boolean"},
+                                                                      "saved": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}}}},
+    {"name": "search_papers", "fn": mcp_search_papers,
+     "description": "Search arXiv (title, abstract, author) through feedel, which rate-limits politely.",
+     "schema": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}, "author": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
+]
+
+MCP_INSTRUCTIONS = ("feedel is this person's quiet reader: a feed of what they chose to follow (YouTube channels, X accounts, blogs, arXiv queries), "
+                    "a library of what they saved, their friends' discussions, and a messages tab where you can leave notes. Read before you write: "
+                    "`messages` shows your earlier notes and their replies. A note should be short, link the few things worth their time and say why, "
+                    "and carry over the tasks they have not ticked. Never mark things seen or saved unless they asked.")
+
+def mcp_handle(msg):
+    """One JSON-RPC message of the Model Context Protocol (Streamable HTTP, requests only; no server-initiated stream).
+    Returns the response dict, or None for a notification."""
+    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "not a JSON-RPC 2.0 message"}}
+    method, mid, params = msg.get("method", ""), msg.get("id"), msg.get("params") or {}
+    if mid is None:  # a notification
+        return None
+    def ok(result):
+        return {"jsonrpc": "2.0", "id": mid, "result": result}
+    def err(code, text):
+        return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": text}}
+    if method == "initialize":
+        return ok({"protocolVersion": params.get("protocolVersion") or "2025-06-18", "capabilities": {"tools": {"listChanged": False}},
+                   "serverInfo": {"name": "feedel", "version": "1.0"}, "instructions": MCP_INSTRUCTIONS})
+    if method == "ping":
+        return ok({})
+    if method == "tools/list":
+        return ok({"tools": [{"name": t["name"], "description": t["description"], "inputSchema": t["schema"]} for t in MCP_TOOLS]})
+    if method == "tools/call":
+        name = params.get("name")
+        tool = next((t for t in MCP_TOOLS if t["name"] == name), None)
+        if tool is None:
+            return err(-32602, f"unknown tool {name!r}")
+        try:
+            result = tool["fn"](params.get("arguments") or {})
+            return ok({"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=1)}], "isError": False})
+        except Exception as ex:
+            return ok({"content": [{"type": "text", "text": str(ex)}], "isError": True})
+    if method in ("resources/list", "resources/templates/list"):
+        return ok({"resources": [], "resourceTemplates": []})
+    if method == "prompts/list":
+        return ok({"prompts": []})
+    return err(-32601, f"method not found: {method}")
+
 # ---------------------------------------------------------------- window (optional: the page in its own window, with a tray icon)
 # `--window`, or the ui.window setting: the page opens in a native window (pywebview: WebView2 on Windows, WebKit on macOS)
 # instead of a browser tab, and closing it hides it to a tray icon (pystray) whose menu is open / refresh / quit. The server
@@ -3546,6 +3908,36 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as ex:
             raise RuntimeError(f"request body is not valid UTF-8 JSON ({ex})")
 
+    def do_mcp(self):
+        """The Model Context Protocol over plain HTTP: a JSON-RPC request (or a batch) in, a JSON answer out. Only
+        pages served from this machine may call it (a browser's Origin header is checked against localhost)."""
+        origin = self.headers.get("Origin") or ""
+        if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"):
+            return self._send({"error": "origin not allowed"}, code=403)
+        try:
+            msg = self._json()
+        except Exception as ex:
+            return self._send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(ex)}}, code=400)
+        answers = [r for r in (mcp_handle(m) for m in (msg if isinstance(msg, list) else [msg])) if r is not None]
+        if not answers:
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.send_header("Mcp-Session-Id", MCP_SESSION)
+            self.end_headers()
+            return
+        body = json.dumps(answers if isinstance(msg, list) else answers[0], ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Mcp-Session-Id", MCP_SESSION)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_DELETE(self):
+        if urlparse(self.path).path == "/mcp":
+            return self._send({"ok": True})
+        return self._send("not found", "text/plain", 404)
+
     def do_GET(self):
         p = urlparse(self.path)
         q = parse_qs(p.query)
@@ -3564,6 +3956,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(sync_payload())
             if p.path == "/api/inbox":
                 return self._send(inbox_list())
+            if p.path == "/api/messages":
+                if q.get("refresh", [""])[0] and zulip_ready() and (STATE.get("dm_at") or 0) < time.time() - 60:
+                    zulip_fetch_dms()
+                return self._send(msg_payload(bool(q.get("archived", [""])[0])))
+            if p.path == "/mcp":
+                return self._send({"error": "this endpoint speaks MCP over POST (Streamable HTTP); add it to Claude Code with: claude mcp add --transport http feedel " + f"http://127.0.0.1:{RUN_PORT}/mcp"}, code=405)
             if p.path == "/api/zulip/streams":
                 return self._send(zulip_status())
             if p.path == "/api/zulip/topics":
@@ -3650,6 +4048,8 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path)
         q = parse_qs(p.query)
         vid = re.sub(r"[^\w-]", "", q.get("id", [""])[0])
+        if p.path == "/mcp":
+            return self.do_mcp()
         try:
             if p.path == "/api/refresh":
                 threading.Thread(target=refresh, args=(True,), daemon=True).start()
@@ -3723,6 +4123,13 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/inbox/remove":
                 inbox_remove(str(body.get("url", "")))
                 return self._send({"ok": True})
+            if p.path == "/api/messages/send":
+                return self._send(msg_send(str(body.get("text", "")), body.get("to") or [], body.get("reply_to"), str(body.get("title", ""))))
+            if p.path == "/api/messages/update":
+                return self._send(msg_update(int(body.get("id")), body.get("read"), body.get("archived"), body.get("body")))
+            if p.path == "/api/messages/refresh":
+                n = zulip_fetch_dms()
+                return self._send({"ok": True, "new": n, "error": STATE.get("dm_error")})
             if p.path == "/api/share":
                 if not isinstance(body.get("item"), dict):
                     return self._send({"error": "nothing to share"}, code=400)
