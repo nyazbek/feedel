@@ -156,9 +156,11 @@ for _stream in (sys.stdout, sys.stderr):  # channel names contain emoji; a cp125
     except Exception:
         pass
 
+NO_CONSOLE = sys.stdout is None  # windowed executable; decided once, since pywebview later puts a null stream in its place
+
 def log(*a):
     line = time.strftime("%H:%M:%S") + " " + " ".join(str(x) for x in a)
-    if sys.stdout is None:  # windowed executable: no console
+    if NO_CONSOLE:  # windowed executable: no console
         try:
             with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -595,10 +597,14 @@ def restart_self():
         args = [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)]) + [a for a in sys.argv[1:] if a != "--inbox"]
         if "--no-open" not in args and not WINDOW.get("show"):
             args.append("--no-open")  # the page that asked is already open (in a window it dies with this process: reopen it)
+        # The frozen one-file exe hands its children PyInstaller's _PYI_* variables, which make a child run out of the
+        # parent's temporary folder — and the old bootloader deletes that folder once this process is gone, leaving the
+        # new one without its files and a "Warning" box behind. Without them the new process unpacks its own folder.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
         try:
             if WINDOW.get("teardown"):
                 WINDOW["teardown"]()  # the tray icon and window go now; os._exit alone would leave a ghost tray icon
-            subprocess.Popen(args, cwd=HERE, close_fds=True)
+            subprocess.Popen(args, cwd=HERE, close_fds=True, env=env)
         finally:
             os._exit(0)
     threading.Thread(target=go, daemon=True).start()
