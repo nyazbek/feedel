@@ -31,9 +31,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyinstaller yt-dlp
+      - run: pip install pyinstaller yt-dlp pywebview pystray pillow
       - name: build
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name feedel --add-data "web${{ matrix.sep }}web" --collect-submodules yt_dlp feedel.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name feedel --add-data "web${{ matrix.sep }}web" --collect-submodules yt_dlp --collect-all webview --collect-submodules pystray --collect-submodules PIL feedel.py
       - name: smoke test (serves the page and answers as yt-dlp)
         shell: bash
         run: |

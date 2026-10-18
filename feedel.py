@@ -11,6 +11,7 @@ blockers like Cold Turkey never see a request to youtube.com or x.com.
 Setup (Windows):
     winget install -e --id shinchiro.mpv
     pip install yt-dlp            (streaming through mpv, downloads, browser-session sync)
+    pip install pywebview pystray pillow   (optional: `--window` shows the page in its own window with a tray icon)
     python feedel.py
 
 Then open the "following" tab in the page to import your subscriptions and follow
@@ -78,7 +79,11 @@ DEFAULT_CONFIG = {
     "filters": {"block_words": []},
     # watch_clipboard: links you copy anywhere (WhatsApp, mail…) land in the inbox; clipboard_any widens it from
     # YouTube/X/arXiv links to every link. fallback_browser: where `--open` sends links feedel cannot show ("" = auto)
-    "ui": {"hide_thumbnails": False, "calm_titles": True, "hide_seen": False, "watch_clipboard": False, "clipboard_any": False},
+    # window: the page in its own window (pywebview) with a tray icon instead of a browser tab; the size and position it had
+    # last time are kept under "window" below
+    "ui": {"hide_thumbnails": False, "calm_titles": True, "hide_seen": False, "watch_clipboard": False, "clipboard_any": False,
+           "window": False},
+    "window": {"width": 1100, "height": 800, "x": None, "y": None},
     "fallback_browser": "",
     # "browser": name of a browser signed in to YouTube whose subscriptions are re-read on every refresh (needs yt-dlp)
     "sync": {"browser": ""},
@@ -151,9 +156,11 @@ for _stream in (sys.stdout, sys.stderr):  # channel names contain emoji; a cp125
     except Exception:
         pass
 
+NO_CONSOLE = sys.stdout is None  # windowed executable; decided once, since pywebview later puts a null stream in its place
+
 def log(*a):
     line = time.strftime("%H:%M:%S") + " " + " ".join(str(x) for x in a)
-    if sys.stdout is None:  # windowed executable: no console
+    if NO_CONSOLE:  # windowed executable: no console
         try:
             with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -588,10 +595,16 @@ def restart_self():
         except Exception:
             pass
         args = [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)]) + [a for a in sys.argv[1:] if a != "--inbox"]
-        if "--no-open" not in args:
-            args.append("--no-open")  # the page that asked is already open
+        if "--no-open" not in args and not WINDOW.get("show"):
+            args.append("--no-open")  # the page that asked is already open (in a window it dies with this process: reopen it)
+        # The frozen one-file exe hands its children PyInstaller's _PYI_* variables, which make a child run out of the
+        # parent's temporary folder — and the old bootloader deletes that folder once this process is gone, leaving the
+        # new one without its files and a "Warning" box behind. Without them the new process unpacks its own folder.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
         try:
-            subprocess.Popen(args, cwd=HERE, close_fds=True)
+            if WINDOW.get("teardown"):
+                WINDOW["teardown"]()  # the tray icon and window go now; os._exit alone would leave a ghost tray icon
+            subprocess.Popen(args, cwd=HERE, close_fds=True, env=env)
         finally:
             os._exit(0)
     threading.Thread(target=go, daemon=True).start()
@@ -1506,6 +1519,7 @@ def settings_payload():
                       "invite": z.get("invite", ""), "organizer": z.get("organizer", ""),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
+            "window_libs_missing": window_libs_missing(), "in_window": "show" in WINDOW,
             **CONFIG["ui"]}
 
 def items_payload():
@@ -1547,7 +1561,7 @@ def update_settings(patch):
         if "block_words" in patch:
             v = patch["block_words"]
             CONFIG["filters"]["block_words"] = [w.strip() for w in (v if isinstance(v, list) else str(v).splitlines()) if w.strip()]
-        for k in ("hide_thumbnails", "calm_titles", "hide_seen", "watch_clipboard", "clipboard_any"):
+        for k in ("hide_thumbnails", "calm_titles", "hide_seen", "watch_clipboard", "clipboard_any", "window"):
             if k in patch:
                 CONFIG["ui"][k] = bool(patch[k])
         if "fallback_browser" in patch:
@@ -2440,7 +2454,8 @@ def open_link_cli(url):
             probe.settimeout(0.5)
             running = probe.connect_ex(("127.0.0.1", PORT)) == 0
         if running:
-            webbrowser.open(target)
+            if not show_running_window(PORT, link=url):  # running in its own window: it shows the link itself
+                webbrowser.open(target)
             return 0
         # not running: start the server with this link queued and the page opened on the inbox
         STATE["queued_link"] = url
@@ -3030,6 +3045,177 @@ def topics_with_items(topics):
         t["item"] = next((by_key[k] for k in t["keys"] if k in by_key), None)
     return topics
 
+# ---------------------------------------------------------------- window (optional: the page in its own window, with a tray icon)
+# `--window`, or the ui.window setting: the page opens in a native window (pywebview: WebView2 on Windows, WebKit on macOS)
+# instead of a browser tab, and closing it hides it to a tray icon (pystray) whose menu is open / refresh / quit. The server
+# runs in this same process as always. Both libraries are imported only in here, so the server stays standard-library only;
+# without them the browser opens exactly as before and the log says what to install.
+WINDOW = {}  # set by run_window(): "show" (bring the window back, optionally on a link) and "quit" (close everything)
+WINDOW_SIZE = (1100, 800)
+WINDOW_LIBS = ("webview", "pystray", "PIL")  # import names of pywebview, pystray and Pillow
+
+def window_libs_missing():
+    """The window libraries that are not installed (checked without importing them). Cached: packages do not appear mid-run."""
+    if "missing" not in WINDOW:
+        import importlib.util
+        WINDOW["missing"] = [m for m in WINDOW_LIBS if importlib.util.find_spec(m) is None]
+    return WINDOW["missing"]
+
+def window_wanted():
+    """--window, or the setting, unless --no-open (no page at all) or --browser (this once in the browser) says otherwise."""
+    if "--no-open" in sys.argv or "--browser" in sys.argv:
+        return False
+    if "--window" in sys.argv:
+        return True
+    return bool(CONFIG["ui"].get("window"))
+
+def window_available():
+    """True when the window can be used now; otherwise logs the one line that says what to install and returns False."""
+    missing = window_libs_missing()
+    if not missing:
+        return True
+    pip = " ".join({"webview": "pywebview", "pystray": "pystray", "PIL": "pillow"}[m] for m in missing)
+    log(f"window mode needs {', '.join(missing)}; run `pip install {pip}` (or build with them) — opening the browser instead")
+    return False
+
+def show_running_window(port, link=None):
+    """Second launch (or the link handler) while feedel is already running: ask that instance to show its window.
+    True when it did, False when it runs in a browser tab (or is an older version), so the caller opens the browser."""
+    try:
+        body = json.dumps({"link": link} if link else {}).encode()
+        r = fetch(f"http://127.0.0.1:{port}/api/show", timeout=3, data=body, headers={"Content-Type": "application/json"})
+        return bool(json.loads(r).get("shown"))
+    except Exception:
+        return False
+
+def tray_image():
+    """A 64x64 icon drawn here, not shipped: a dark rounded square with three pale lines, a quiet list."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((4, 4, 59, 59), radius=14, fill=(43, 43, 43, 255))
+    for y in (20, 31, 42):
+        d.rounded_rectangle((17, y, 47, y + 4), radius=2, fill=(233, 228, 216, 255))
+    return img
+
+def window_geometry():
+    """Saved size and position, checked against the screens that exist now (a monitor may have gone)."""
+    import webview
+    g = CONFIG.get("window") or {}
+    w, h = int(g.get("width") or WINDOW_SIZE[0]), int(g.get("height") or WINDOW_SIZE[1])
+    x, y = g.get("x"), g.get("y")
+    if x is not None and y is not None:
+        try:
+            on_screen = any(s.x - w + 120 <= x <= s.x + s.width - 120 and s.y - 20 <= y <= s.y + s.height - 120 for s in webview.screens)
+        except Exception:
+            on_screen = True
+        if not on_screen:
+            x = y = None
+    return max(w, 480), max(h, 360), x, y
+
+def run_window(port, path=""):
+    """Blocks in the GUI loop on the main thread until the user quits; the server is already serving on another thread.
+    Call window_available() first: this assumes the libraries are there."""
+    import webview, pystray
+    url = f"http://localhost:{port}/{path}"
+    w, h, x, y = window_geometry()
+    win = webview.create_window("feedel", url, width=w, height=h, x=x, y=y, min_size=(480, 360), text_select=True)
+    saver = [None]
+    geom = CONFIG.setdefault("window", {})
+
+    def save_later():  # a resize or move fires many times; write the settings once it stops
+        if saver[0]:
+            saver[0].cancel()
+        saver[0] = threading.Timer(1.0, save_config)
+        saver[0].daemon = True
+        saver[0].start()
+
+    def on_resized(width, height):
+        geom["width"], geom["height"] = int(width), int(height)
+        save_later()
+
+    def on_moved(mx, my):
+        if mx > -30000 and my > -30000:  # Windows parks a minimized window at -32000
+            geom["x"], geom["y"] = int(mx), int(my)
+            save_later()
+
+    def show(link=None):
+        if link:
+            try:
+                inbox_take(link, "link")
+            except Exception as ex:
+                log(f"could not open {link}: {ex}")
+            win.load_url(f"http://localhost:{port}/#inbox")
+        win.show()
+        try:
+            win.restore()
+        except Exception:
+            pass
+
+    def quit_app():
+        if WINDOW.get("quitting"):
+            return
+        WINDOW["quitting"] = True
+        try:
+            if saver[0]:
+                saver[0].cancel()
+            save_config()
+            save_cache()
+        except Exception:
+            pass
+        try:
+            if WINDOW.get("tray"):
+                WINDOW["tray"].stop()
+        except Exception:
+            pass
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        threading.Timer(1.0, lambda: os._exit(0)).start()  # whatever the GUI loop does with that, the process ends
+
+    def on_closing():  # the close button hides the window; the tray menu is where feedel is quit
+        if WINDOW.get("quitting") or not WINDOW.get("tray"):
+            return True
+        win.hide()
+        return False
+
+    win.events.resized += on_resized
+    win.events.moved += on_moved
+    win.events.closing += on_closing
+    def teardown():
+        """For restart_self: free the port, drop the tray icon and hide the window, all quick; os._exit does the rest.
+        The port first: WebView2 takes a couple of seconds to unload when the process exits, and the restarted process
+        would find the port still busy and think feedel is already running."""
+        WINDOW["quitting"] = True
+        for f in (lambda: WINDOW["server"].server_close() if WINDOW.get("server") else None,
+                  lambda: WINDOW["tray"].stop() if WINDOW.get("tray") else None, win.hide):
+            try:
+                f()
+            except Exception:
+                pass
+
+    WINDOW["show"], WINDOW["quit"], WINDOW["teardown"] = show, quit_app, teardown
+
+    def start_tray():
+        menu = pystray.Menu(pystray.MenuItem("open", lambda: show(), default=True),
+                            pystray.MenuItem("refresh", lambda: threading.Thread(target=refresh, daemon=True).start()),
+                            pystray.MenuItem("quit", lambda: quit_app()))
+        tray = pystray.Icon("feedel", tray_image(), "feedel", menu=menu)
+        try:
+            if sys.platform == "darwin":
+                from AppKit import NSApplication
+                tray.run_detached(darwin_nsapplication=NSApplication.sharedApplication())
+            else:
+                tray.run_detached()
+            WINDOW["tray"] = tray
+        except Exception as ex:
+            log(f"no tray icon ({ex}); closing the window quits feedel")
+
+    log("feedel in its own window (close hides it to the tray; the tray menu quits)")
+    webview.start(start_tray, private_mode=False, storage_path=os.path.join(HERE, "cache", "webview"))
+    quit_app()  # the window is gone (quit from the tray, or closed with no tray): stop the server too
+
 # ---------------------------------------------------------------- web
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -3181,8 +3367,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if p.path == "/api/quit":
                 self._send("bye", "text/plain")
-                threading.Timer(0.5, lambda: os._exit(0)).start()
+                threading.Timer(0.5, WINDOW.get("quit") or (lambda: os._exit(0))).start()
                 return
+            if p.path == "/api/show":  # a second launch, or the link handler: show the window if there is one
+                if not WINDOW.get("show"):
+                    return self._send({"shown": False})
+                link = str(self._json().get("link") or "").strip() or None
+                threading.Thread(target=WINDOW["show"], args=(link,), daemon=True).start()
+                return self._send({"shown": True})
             body = self._json()
             if p.path == "/api/mark":
                 ids = body.get("ids") or [body.get("id")]
@@ -3288,9 +3480,11 @@ if NEW_DB and migrate_legacy_json():
     STATE["items"] = load_items()
 normalize_subscriptions()
 
-USAGE = """usage: feedel.py [--port N] [--no-open] [--export] [--import FILE]
+USAGE = """usage: feedel.py [--port N] [--no-open] [--window | --browser] [--export] [--import FILE]
   --port N        listen on another port (default 8765)
   --no-open       do not open the page in a browser
+  --window        show the page in its own window with a tray icon (needs pywebview, pystray and pillow; the browser otherwise)
+  --browser       open the browser this once even when the "own window" setting is on
   --export        print everything in feedel.db (settings, follows, seen/saved, cache, items) as JSON on stdout and exit
   --import FILE   merge a JSON export, or an old config.json / state.json / cache.json, into feedel.db and exit
                   (nothing is removed; stop a running feedel first)
@@ -3350,7 +3544,7 @@ if __name__ == "__main__":
         srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:  # already running (double-clicked twice): just show the page
         log(f"port {port} is busy; feedel is probably already running — opening the page")
-        if "--no-open" not in sys.argv:
+        if "--no-open" not in sys.argv and not show_running_window(port):  # a running window comes back; else a browser tab
             import webbrowser
             webbrowser.open(f"http://localhost:{port}")
         sys.exit(0)
@@ -3361,13 +3555,25 @@ if __name__ == "__main__":
     if STATE.get("queued_link"):
         threading.Thread(target=_safe_take, args=(STATE.pop("queued_link"), "link"), daemon=True).start()
         sys.argv.append("--inbox")
-    if "--no-open" not in sys.argv:
+    in_window = window_wanted() and window_available()
+    if "--no-open" not in sys.argv and not in_window:
         try:
             import webbrowser
             webbrowser.open(f"http://localhost:{port}" + ("/#inbox" if "--inbox" in sys.argv else ""))
         except Exception:
             pass
     try:
-        srv.serve_forever()
+        if in_window:  # the GUI loop needs the main thread; the server moves to another one
+            WINDOW["server"] = srv  # so a restart can free the port before this process is gone
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                run_window(port, "#inbox" if "--inbox" in sys.argv else "")
+            except Exception as ex:  # e.g. no WebView2 runtime: the server is up, so show the page the usual way
+                log(f"the window could not open ({ex}) — opening the browser instead")
+                import webbrowser
+                webbrowser.open(f"http://localhost:{port}" + ("/#inbox" if "--inbox" in sys.argv else ""))
+                threading.Event().wait()
+        else:
+            srv.serve_forever()
     except KeyboardInterrupt:
         pass

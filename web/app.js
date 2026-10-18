@@ -711,7 +711,8 @@ function queueLibUpdate(id, patch) {
 
 function fillSettings() {
   const s = data.settings;
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) $('#s_' + k).checked = !!s[k];
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any', 'window']) $('#s_' + k).checked = !!s[k];
+  $('#s_window_note').textContent = (s.window_libs_missing || []).length ? '— needs pip install pywebview pystray pillow' : (s.in_window ? '' : '— from the next start');
   $('#s_min_minutes').value = s.min_minutes ?? 0;
   $('#s_max_per_channel').value = s.max_per_channel ?? 0;
   $('#s_block_words').value = (s.block_words || []).join('\n');
@@ -733,7 +734,7 @@ async function testZulip() {
 }
 async function saveSettings(keepOpen) {
   const patch = {};
-  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any']) patch[k] = $('#s_' + k).checked;
+  for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'watch_clipboard', 'clipboard_any', 'window']) patch[k] = $('#s_' + k).checked;
   patch.min_minutes = +$('#s_min_minutes').value || 0;
   patch.max_per_channel = +$('#s_max_per_channel').value || 0;
   patch.block_words = $('#s_block_words').value;
