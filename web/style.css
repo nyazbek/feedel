@@ -34,6 +34,11 @@ h2.sub .meta{font-weight:400}
 .inboxacts{margin-top:4px}
 .by button.src{color:inherit;border-bottom:1px dotted var(--faint)}
 .by button.src:hover{color:var(--fg)}
+.rec{margin-top:5px;font-size:14px;color:var(--mut)}
+.rec b{color:var(--fg);font-weight:600}
+.rec button{color:var(--acc)}
+.share .people{margin-top:8px;font-size:14px;color:var(--mut);display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}
+.share .people label{color:var(--fg)}
 .disc{margin-top:5px;font-size:13.5px;color:var(--mut);font-style:italic}
 .disc button{font-style:normal}
 .streams label{font-size:14px;color:var(--mut)}
