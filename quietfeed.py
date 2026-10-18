@@ -897,7 +897,7 @@ def tw_fetch_user(sub):
                 m = re.search(r"/status/(\d+)", it["id"])
                 media = tw_syndication(m.group(1)) if m else None
                 if media:
-                    it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos", "reply_to", "reply_to_user", "convo") if k in media})
+                    it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos", "reply_to", "reply_to_user", "convo", "parent", "quote") if k in media})
                     if media.get("ts"):
                         it["ts"] = media["ts"]
             return items
@@ -920,11 +920,21 @@ def tw_token(tid):
         frac -= d
     return (s + "." + f).replace("0", "").replace(".", "")
 
+def _tw_context(t):
+    """The post a reply answers, or the post a quote-post quotes, as the page shows it above the post itself."""
+    if not isinstance(t, dict) or not t.get("id_str"):
+        return None
+    u = t.get("user") or {}
+    user = (u.get("screen_name") or "").lower()
+    media = [m for m in t.get("mediaDetails", []) if m.get("type")] or t.get("photos") or []
+    return {"id": t["id_str"], "user": user, "name": u.get("name", ""), "text": t.get("text", ""),
+            "link": f"https://x.com/{user or 'i'}/status/{t['id_str']}", "ts": iso_ts(t.get("created_at")), "media": bool(media)}
+
 def tw_syndication(tid):
     """One public post as JSON (no login): text, author, time, photos and the video's mp4 variants.
     Cached forever by id since a post's media does not change; failures are not cached."""
     cached = CACHE["tweets"].get(tid)
-    if cached is not None and "convo" in cached:  # entries from before the reply fields existed are refreshed once
+    if cached is not None and "parent" in cached:  # entries from before the reply/quote fields existed are refreshed once
         return cached
     try:
         d = json.loads(fetch(f"https://cdn.syndication.twimg.com/tweet-result?id={tid}&token={tw_token(tid)}",
@@ -938,7 +948,8 @@ def tw_syndication(tid):
            "photos": [p.get("url") for p in d.get("photos", []) if p.get("url")][:4],
            "reply_to": d.get("in_reply_to_status_id_str") or ((d.get("parent") or {}).get("id_str")) or "",
            "reply_to_user": ((d.get("parent") or {}).get("user") or {}).get("screen_name", "").lower(),
-           "convo": bool(d.get("conversation_count"))}
+           "convo": bool(d.get("conversation_count")),
+           "parent": _tw_context(d.get("parent")), "quote": _tw_context(d.get("quoted_tweet"))}
     for m in d.get("mediaDetails", []):
         if m.get("type") in ("video", "animated_gif"):
             vs = sorted([v for v in m.get("video_info", {}).get("variants", []) if v.get("content_type") == "video/mp4" and v.get("url")],
@@ -2073,7 +2084,7 @@ def resolve_link(url, via=""):
                 handle = media.get("user") or user.lower()
                 it = {"kind": "tw", "id": canon, "title": media["text"], "author": "@" + handle, "ts": media.get("ts") or now, "desc": "", "link": canon,
                       "follow": {"kind": "tw", "ref": handle, "name": media.get("name") or "@" + handle}}
-                it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos", "reply_to", "reply_to_user", "convo") if k in media})
+                it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos", "reply_to", "reply_to_user", "convo", "parent", "quote") if k in media})
                 return it
             o = json.loads(fetch("https://publish.twitter.com/oembed?" + urlencode({"url": f"https://twitter.com/{user}/status/{sid}", "omit_script": "true", "dnt": "true", "hide_thread": "true"}), timeout=15))
             h = o.get("html", "")

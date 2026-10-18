@@ -156,6 +156,11 @@ article.digest .desc span{display:block;color:var(--mut)}
 #msg{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:6px;font-size:13px;opacity:0;transition:opacity .2s;max-width:90vw;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.15)}
 .empty{color:var(--mut);padding:48px 0;text-align:center;font-size:14px}
 
+.ctx{margin:4px 0 6px;padding:6px 10px;border-left:2px solid var(--line);border-radius:0 6px 6px 0;background:var(--soft)}
+.ctx .meta{font-size:12.5px}
+.ctx .meta b{color:var(--fg);font-weight:600}
+.ctxt{font-size:14px;color:var(--mut);white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+
 /* ---- threads of posts on X */
 .twthread{margin-top:10px;padding:10px 14px;background:var(--soft);border-radius:8px}
 .twthread .thhead{margin:0 0 4px;padding-bottom:6px;border-bottom:1px solid var(--line)}
