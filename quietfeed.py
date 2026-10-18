@@ -29,7 +29,7 @@ import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -853,12 +853,14 @@ def fetch_channel(sub):
         raw.append({"kind": "yt", "id": vid, "cid": cid, "title": e.findtext("a:title", default="", namespaces=ns),
                     "author": sub["name"], "ts": iso_ts(e.findtext("a:published", namespaces=ns)) or time.time(),
                     "desc": (e.findtext("m:group/m:description", default="", namespaces=ns) or "")[:300]})
-    need = [r["id"] for r in raw if r["id"] not in CACHE["shorts"] or r["id"] not in CACHE["durations"]]
+    # a Short needs no length; a video listed without one (live stream, premiere) is remembered as None so the channel
+    # is not rescanned every refresh for it; the length is filled in when the channel is next scanned for a new upload
+    need = [r["id"] for r in raw if r["id"] not in CACHE["shorts"] or (not CACHE["shorts"][r["id"]] and r["id"] not in CACHE["durations"])]
     if need:
         durs, shorts = yt_scan_channel(cid)
         for v, s in durs.items():
             cache_put("shorts", v, False)
-            if s is not None:
+            if s is not None or v not in CACHE["durations"]:
                 cache_put("durations", v, s)
         for v in shorts:
             cache_put("shorts", v, True)
@@ -867,6 +869,8 @@ def fetch_channel(sub):
                 code, _ = head_no_redirect(f"https://www.youtube.com/shorts/{v}")
                 if code:
                     cache_put("shorts", v, code == 200)
+            if v not in CACHE["durations"] and not CACHE["shorts"].get(v):
+                cache_put("durations", v, None)
     for r in raw:
         r["dur"] = CACHE["durations"].get(r["id"])
         r["short"] = CACHE["shorts"].get(r["id"], False)
@@ -874,14 +878,20 @@ def fetch_channel(sub):
 
 # ---------------------------------------------------------------- twitter
 
+TW_GOOD = {"inst": None}  # the Nitter instance that answered last; tried first, since the dead ones cost seconds per account
+
 def tw_fetch_user(sub):
     user = sub["id"]
-    instances = CONFIG["twitter"].get("nitter_instances", [])
+    instances = list(CONFIG["twitter"].get("nitter_instances", []))
+    if TW_GOOD["inst"] in instances:
+        instances.remove(TW_GOOD["inst"])
+        instances.insert(0, TW_GOOD["inst"])
     last = "no instances configured"
     for inst in instances:
         try:
             xml = fetch(f"{inst.rstrip('/')}/{user}/rss", timeout=12, headers=FEED_ACCEPT)
             root = ET.fromstring(xml)
+            TW_GOOD["inst"] = inst
             items = []
             for it in root.iter("item"):
                 pubdate = it.findtext("pubDate") or ""
@@ -893,9 +903,13 @@ def tw_fetch_user(sub):
                 creator = it.findtext("{http://purl.org/dc/elements/1.1/}creator") or "@" + user
                 items.append({"kind": "tw", "id": link, "cid": user, "title": it.findtext("title") or "",
                               "author": creator, "ts": ts, "desc": "", "link": link})
-            for it in items:  # videos in posts from people you follow are pre-approved: show them
+            def media_of(it):  # videos in posts from people you follow are pre-approved: show them
                 m = re.search(r"/status/(\d+)", it["id"])
-                media = tw_syndication(m.group(1)) if m else None
+                return tw_syndication(m.group(1)) if m else None
+
+            with ThreadPoolExecutor(max_workers=4) as pool:  # one syndication call per post; four at a time, not one after another
+                medias = list(pool.map(media_of, items))
+            for it, media in zip(items, medias):
                 if media:
                     it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos", "reply_to", "reply_to_user", "convo", "parent", "quote") if k in media})
                     if media.get("ts"):
@@ -1256,19 +1270,72 @@ def fetch_arxiv(sub):
 
 # ---------------------------------------------------------------- refresh loop
 
-def refresh():
+WORKERS = 16        # sources fetched at once; all of it is waiting on the network
+FLUSH_EVERY = 1.5   # seconds between merges of finished sources into the feed, so it fills as sources answer
+QUIET = ((30 * 86400, 6 * 3600), (7 * 86400, 2 * 3600))  # (newest video older than, refetch at most every) for YouTube channels
+KIND_NAMES = {"yt": "YouTube", "tw": "X", "rss": "feeds", "arxiv": "arXiv"}
+
+def newest_by_source():
+    """(kind, ref) → timestamp of the newest item the table holds for that source."""
+    with LOCK:
+        rows = DB.execute("SELECT s.kind, s.ref, MAX(i.ts) AS ts FROM items i JOIN sources s ON s.id = i.source_id GROUP BY i.source_id").fetchall()
+    return {(r["kind"], r["ref"]): r["ts"] for r in rows}
+
+def due(kind, sub, now):
+    """Adaptive polling, YouTube only: a channel whose newest video is older than 30 days is refetched at most every
+    6 hours, older than 7 days every 2 hours, otherwise every refresh. A channel never fetched, in error, or with no
+    known items is always due. X, feeds and arXiv are fetched every refresh."""
+    if kind != "yt" or not sub.get("last_fetched") or sub.get("error") or not sub.get("newest"):
+        return True
+    age = now - sub["newest"]
+    for older_than, every in QUIET:
+        if age > older_than:
+            return now - sub["last_fetched"] >= every
+    return True
+
+def merge_items(items):
+    """Fold freshly fetched items into the feed without waiting for the slowest source: upsert them in the items
+    table and in STATE["items"] (newest first). What the table already holds for those sources stays, as it would
+    after a full reload; prune_items() at the end of the refresh is what drops old items."""
+    items = [it for it in items if it.get("id")]
+    if not items:
+        return
+    with tx() as db:
+        if write_items(db, items) < len(items):  # a source resolved or added during this refresh has no row yet
+            write_config(db)
+            write_items(db, items)
+    key = lambda it: (it["kind"], it.get("cid"), it["id"])
+    with LOCK:
+        fresh = {key(it): it for it in items}
+        merged = [it for it in STATE["items"] if key(it) not in fresh] + list(fresh.values())
+        merged.sort(key=lambda it: -(it.get("ts") or 0))
+        STATE["items"] = merged[: max(5000, 10 * int(CONFIG.get("max_items") or 400))]
+
+def refresh(force=False):
+    """Fetch every source due and merge what comes back into the feed as each one finishes. `force` (the refresh
+    button) also fetches the quiet YouTube channels adaptive polling would skip this time, and retries a browser
+    sync that is waiting out its hour."""
     with LOCK:
         if STATE["refreshing"]:
             STATE["rerun"] = True  # something changed mid-refresh (e.g. an import): go again when done
+            STATE["rerun_force"] = STATE.get("rerun_force", False) or force
             return
         STATE["refreshing"] = True
     try:
-        log("refreshing…")
-        sync_accounts()
+        t0 = time.time()
+        log("refreshing…" + (" (everything, on request)" if force else ""))
+        sync_accounts(force)
         threading.Thread(target=zulip_fetch_stream, daemon=True).start()
-        errors, items = [], []
+        errors, counts, done_at = [], Counter(), {}
         with LOCK:
-            jobs = [(k, s) for k, s in all_subs() if not s.get("muted") or k == "yt"]
+            newest = newest_by_source()
+            for k, s in all_subs():
+                if k == "yt" and s.get("id"):
+                    s["newest"] = max(s.get("newest") or 0, newest.get((k, s["id"])) or 0) or None
+            subs = [(k, s) for k, s in all_subs() if not s.get("muted") or k == "yt"]
+            jobs = [(k, s) for k, s in subs if force or due(k, s, t0)]
+            jobs.sort(key=lambda ks: ks[0] == "yt")  # X, feeds and arXiv first: a handful of sources, each a chip of its own
+        skipped = len(subs) - len(jobs)
 
         def do(kind, sub):
             fn = {"yt": fetch_channel, "tw": tw_fetch_user, "rss": fetch_rss, "arxiv": fetch_arxiv}[kind]
@@ -1277,35 +1344,52 @@ def refresh():
                 r = fn(sub)
                 sub.pop("error", None)
                 sub["last_fetched"] = time.time()
-                return r
+                if r:
+                    sub["newest"] = max(sub.get("newest") or 0, max(it.get("ts") or 0 for it in r)) or None
             except Exception as ex:
                 sub["error"] = str(ex)
                 errors.append(f"{label} {sub.get('name') or sub.get('id') or sub.get('ref')}: {ex}")
-                return []
+                r = []
+            done_at[kind] = max(done_at.get(kind, 0), time.time() - t0)
+            return r
 
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            lists = list(ex.map(lambda ks: do(*ks), jobs))
-        counts = Counter()
-        for (k, _), l in zip(jobs, lists):
-            counts[k] += len(l)
-            items.extend(l)
-        save_config()  # resolved ids, names, errors; also makes sure every fetched item has its source row
+        pending, flushed_at = [], time.time()
+
+        def flush():
+            nonlocal pending, flushed_at
+            batch, pending, flushed_at = pending, [], time.time()
+            merge_items([it for l in batch for it in l])
+            with LOCK:
+                STATE["errors"] = list(errors)
+
+        with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+            futures = {ex.submit(do, k, s): k for k, s in jobs}
+            for f in as_completed(futures):
+                k, l = futures[f], f.result()
+                counts[k] += len(l)
+                pending.append(l)
+                if time.time() - flushed_at >= FLUSH_EVERY:
+                    flush()
+        flush()
+        save_config()  # resolved ids, names, errors, last_fetched, newest
         save_cache()
-        with tx() as db:  # what the feeds returned goes into the items table; the feed itself is read back from there
-            write_items(db, items)
+        with tx() as db:  # everything fetched is already in the items table; the feed itself is read back from there
             prune_items(db)
         with LOCK:
             STATE["items"], STATE["errors"] = load_items(), errors
             STATE["last_refresh"] = time.time()
-        log(f"done: {counts['yt']} videos, {counts['tw']} tweets, {counts['rss']} posts, {counts['arxiv']} papers, {len(errors)} errors")
+        per_kind = ", ".join(f"{KIND_NAMES[k]} {done_at[k]:.0f} s" for k in KINDS if k in done_at)
+        log(f"done in {time.time() - t0:.0f} s: {len(jobs)} sources fetched, {skipped} quiet channels skipped ({per_kind}); "
+            f"{counts['yt']} videos, {counts['tw']} tweets, {counts['rss']} posts, {counts['arxiv']} papers, {len(errors)} errors")
         for e in errors:
             log("  !", e)
     finally:
         with LOCK:
             STATE["refreshing"] = False
             rerun = STATE.pop("rerun", False)
+            rerun_force = STATE.pop("rerun_force", False)
     if rerun:
-        refresh()
+        refresh(rerun_force)
 
 def refresh_loop():
     while True:
@@ -1815,10 +1899,22 @@ def yt_account_subscriptions():
         if not page:
             return out
 
-def sync_accounts():
+BROWSER_RETRY = 3600  # a browser that keeps its cookie database locked is tried again this often, not every refresh
+
+def browser_sync_error(browser, ex):
+    """(message, locked): yt-dlp's error for a Chromium browser (Chrome, Vivaldi, Brave, Edge…) that keeps its cookie
+    database locked while it is open (yt-dlp issue 7271) is said plainly; anything else passes through."""
+    s = str(ex)
+    if "cookie database" in s.lower() or "7271" in s or isinstance(ex, PermissionError):
+        return (f"{browser} keeps its cookie database locked while it is open: close {browser} during a sync, "
+                f"or use the Google account sync instead"), True
+    return s, False
+
+def sync_accounts(force=False):
     """Runs at the start of every refresh. Mirrors *new* follows from the connected YouTube account, from a
     browser's YouTube session if configured, and resolves queued X ids. It only ever adds: unfollowing
-    stays something you do on purpose, in the app."""
+    stays something you do on purpose, in the app. A browser whose cookie database was locked is left alone for an
+    hour unless `force` (the refresh and sync-now buttons)."""
     try:
         chans = yt_account_subscriptions()
         if chans is not None:
@@ -1830,14 +1926,20 @@ def sync_accounts():
         SYNC["google"] = {"ok": False, "error": str(ex), "at": time.time()}
         log("  YouTube account sync failed:", ex)
     b = (CONFIG.get("sync") or {}).get("browser")
-    if b:
+    if b and not force and (SYNC["browser"] or {}).get("retry_at", 0) > time.time():
+        pass  # its cookie database was locked less than an hour ago: not worth a second and a log line every refresh
+    elif b:
         try:
             chans = import_from_browser(b)
             r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans], trigger_refresh=False, respect_unfollowed=True)
             SYNC["browser"] = {"ok": True, "count": len(chans), "added": len(r["added"]), "at": time.time()}
         except Exception as ex:
-            SYNC["browser"] = {"ok": False, "error": str(ex), "at": time.time()}
-            log(f"  {b} sync failed:", ex)
+            msg, locked = browser_sync_error(b, ex)
+            SYNC["browser"] = {"ok": False, "error": msg, "at": time.time()}
+            if locked:
+                retry_at = time.time() + BROWSER_RETRY
+                SYNC["browser"].update({"retry_at": retry_at, "error": f"{msg} (next try at {time.strftime('%H:%M', time.localtime(retry_at))}, or sync now)"})
+            log(f"  {b} sync failed:", msg)
     try:
         n = resolve_pending_x()
         SYNC["x"] = {"ok": True, "resolved": n, "pending": len(CONFIG["twitter"].get("pending_ids", [])), "at": time.time()}
@@ -2921,7 +3023,7 @@ class Handler(BaseHTTPRequestHandler):
         vid = re.sub(r"[^\w-]", "", q.get("id", [""])[0])
         try:
             if p.path == "/api/refresh":
-                threading.Thread(target=refresh, daemon=True).start()
+                threading.Thread(target=refresh, args=(True,), daemon=True).start()
                 return self._send("ok", "text/plain")
             if p.path == "/api/play" and vid:
                 mark([vid], "seen", True)
@@ -3017,10 +3119,13 @@ class Handler(BaseHTTPRequestHandler):
                 SYNC["browser"] = None
                 return self._send({"ok": True})
             if p.path == "/api/sync/now":
-                threading.Thread(target=refresh, daemon=True).start()
+                threading.Thread(target=refresh, args=(True,), daemon=True).start()
                 return self._send({"ok": True})
             if p.path == "/api/import/browser":
-                chans = import_from_browser(body.get("browser", "firefox"))
+                try:
+                    chans = import_from_browser(body.get("browser", "firefox"))
+                except Exception as ex:
+                    raise RuntimeError(browser_sync_error(body.get("browser", "firefox"), ex)[0])
                 r = add_entries([{"kind": "yt", "ref": c["id"], "name": c["name"], "avatar": c["avatar"]} for c in chans], respect_unfollowed=True)
                 r["found"] = len(chans)
                 return self._send(r)

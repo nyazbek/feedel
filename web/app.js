@@ -7,6 +7,7 @@ const KIND_ONE = { yt: 'channel', tw: 'account', rss: 'feed', arxiv: 'query' };
 let view = 'feed', kindFilter = 'all', tagFilter = null, paperWindow = 1, axResults = null, feedQuery = '', ytResults = null;
 let libKind = 'all', libTag = null;
 let data = null, subs = null;
+let loadSig = '', refreshPoll = null, refreshPolls = 0;  // while the server is refreshing, the feed is re-read every 3 s
 const seen = new Set(), saved = new Set();
 let savedItems = {};
 
@@ -67,14 +68,28 @@ function cycleTheme() {
 
 /* ------------------------------------------------------------ feed */
 
-async function load() {
-  try { data = await api('/api/items'); } catch (e) { toast('server not answering: ' + e.message); return; }
+async function load(onlyIfChanged = false) {
+  let d;
+  try { d = await api('/api/items'); } catch (e) { toast('server not answering: ' + e.message); return; }
+  pollWhileRefreshing(d.refreshing);
+  const sig = [d.refreshing, d.last_refresh, d.errors.length, d.inbox.length, d.items.map(i => i.id).join(',')].join('|');
+  if (onlyIfChanged && sig === loadSig) return;  // nothing new yet: leave the page alone
+  loadSig = sig; data = d;
   seen.clear(); data.seen.forEach(i => seen.add(i));
   saved.clear(); data.saved.forEach(i => saved.add(i));
   savedItems = {}; (data.saved_items || []).forEach(i => { savedItems[i.id] = i; });
   $('#authors').innerHTML = (data.arxiv_authors || []).map(a => `<option value="${esc(a)}">`).join('');
   migrateLocalSeen();
   render();
+}
+
+// the server merges each source into the feed as it answers, so while it says "refreshing" the page re-reads the
+// feed every 3 s (re-rendering only when something changed) instead of waiting for the slowest source
+function pollWhileRefreshing(refreshing) {
+  clearTimeout(refreshPoll);
+  if (!refreshing) { refreshPolls = 0; return; }
+  if (refreshPolls++ > 200) return;  // ten minutes: fall back to the minute timer
+  refreshPoll = setTimeout(() => load(true), 3000);
 }
 
 function migrateLocalSeen() {
@@ -928,7 +943,7 @@ document.addEventListener('click', async e => {
   if (b.id === 'ax_clear') { axResults = null; render(); return; }
   if (b.id === 'theme') { cycleTheme(); return; }
   if (b.id === 'linkbtn') { const f = $('#linkform'); f.hidden = !f.hidden; if (!f.hidden) $('#linkq').focus(); return; }
-  if (b.id === 'rf') { toast('refreshing…'); await api('/api/refresh', {}); setTimeout(load, 4000); return; }
+  if (b.id === 'rf') { toast('refreshing…'); await api('/api/refresh', {}); setTimeout(() => load(true), 1500); return; }
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }

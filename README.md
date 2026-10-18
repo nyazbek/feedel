@@ -23,6 +23,8 @@ First run creates `quietfeed.db` next to the program and opens the page. Standar
 - **posts** from Substack and any RSS/Atom feed; open in the browser.
 - **papers** from arXiv: categories (`math.PR`, `cs.LG`, or `math` for a whole archive), authors, or keyword watches. In the *all* view, papers fold into one line per day ("12 new papers") so they never drown the rest; the *papers* chip opens them properly.
 
+Everything is refetched every 30 minutes (`refresh_minutes`) and when you press **refresh**. Sources are fetched sixteen at a time and each one's items land in the feed the moment it answers, so after a refresh starts the feed fills within seconds instead of waiting for the slowest source; while the server says *refreshing…* the page re-reads the feed every few seconds. YouTube channels that have gone quiet are polled less often: no video in the last 7 days, at most every 2 hours; none in 30 days, at most every 6 hours. **refresh** ignores that and fetches everything. The log shows one line per refresh with how many sources were fetched, how many quiet channels were skipped and how long each kind took.
+
 The papers view has its own toolbar: **latest** shows the newest listing you have (arXiv dates papers by submission and lists them a day or two later, so this is keyed to the newest batch, not the clock), **3 days / week / all** count back from now. The search box asks arXiv directly: keywords (quote a phrase), author, a date range, sorted by newest, last updated or relevance. Click an author's name on any paper to follow them or list their papers; followed authors are highlighted. Every paper has abstract, abs and pdf links, copy link, and save.
 
 ## Search
@@ -55,7 +57,7 @@ The token is stored in `google_token.json`; delete it or click *disconnect* to r
 
 ### Browser session sync
 
-If a browser on this machine is signed in to YouTube, pick it under *Browser session* and the program re-reads that browser's subscriptions list on every refresh using the cookies the browser already stores. The browser itself never opens youtube.com. Firefox works best; recent Chrome builds encrypt cookies in a way yt-dlp sometimes cannot read.
+If a browser on this machine is signed in to YouTube, pick it under *Browser session* and the program re-reads that browser's subscriptions list on every refresh using the cookies the browser already stores. The browser itself never opens youtube.com. Firefox works best. Chromium browsers (Chrome, Vivaldi, Brave, Edge, Opera) keep their cookie database locked while they are open, so the sync fails with *keeps its cookie database locked while it is open*: close that browser during a sync (then press *sync now*), or use the Google account sync instead. After that error the program waits an hour before trying on its own again; *sync now* and *refresh* try right away. Recent Chrome builds also encrypt cookies in a way yt-dlp sometimes cannot read.
 
 ### X
 
