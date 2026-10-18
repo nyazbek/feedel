@@ -16,7 +16,11 @@ async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const ct = r.headers.get('content-type') || '';
   const out = ct.includes('json') ? await r.json() : await r.text();
-  if (!r.ok) throw new Error((out && out.error) || out || r.statusText);
+  if (!r.ok) {
+    // a route this page knows but the server does not: the server is older than the page
+    if ((r.status === 404 || (r.status === 400 && out === 'bad request')) && path.startsWith('/api/')) { const n = $('#stale'); if (n) n.hidden = false; throw new Error('this copy of quietfeed is older than the page — restart it (notice at the top)'); }
+    throw new Error((out && out.error) || out || r.statusText);
+  }
   return out;
 }
 
@@ -73,8 +77,19 @@ async function load() {
   saved.clear(); data.saved.forEach(i => saved.add(i));
   savedItems = {}; (data.saved_items || []).forEach(i => { savedItems[i.id] = i; });
   $('#authors').innerHTML = (data.arxiv_authors || []).map(a => `<option value="${esc(a)}">`).join('');
+  $('#stale').hidden = !data.stale;
   migrateLocalSeen();
   render();
+}
+
+async function restartServer() {
+  const st = $('#restart-status'); st.textContent = 'restarting…';
+  try { await api('/api/restart', {}); } catch (e) { /* the old process is gone before it can answer cleanly */ }
+  const t0 = Date.now();
+  const poll = setInterval(async () => {
+    try { const r = await fetch('/api/items', { cache: 'no-store' }); if (r.ok) { clearInterval(poll); location.reload(); } }
+    catch (e) { if (Date.now() - t0 > 30000) { clearInterval(poll); st.textContent = 'it did not come back; start it by hand'; } }
+  }, 1000);
 }
 
 function migrateLocalSeen() {
@@ -984,6 +999,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.w !== undefined) { paperWindow = +b.dataset.w; axResults = null; render(); return; }
   if (b.id === 'ax_clear') { axResults = null; render(); return; }
   if (b.id === 'theme') { cycleTheme(); return; }
+  if (b.id === 'restart') { restartServer(); return; }
   if (b.id === 'linkbtn') { const f = $('#linkform'); f.hidden = !f.hidden; if (!f.hidden) $('#linkq').focus(); return; }
   if (b.id === 'rf') { toast('refreshing…'); await api('/api/refresh', {}); setTimeout(load, 4000); return; }
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }

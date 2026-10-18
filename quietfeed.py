@@ -554,6 +554,39 @@ CACHE_DIRTY = set()  # (kind, key) pairs changed since the last save_cache
 SEEN_STATE = load_marks()
 
 STATE = {"items": load_items(), "errors": [], "last_refresh": None, "refreshing": False}
+
+def code_mtime():
+    """When the code on disk last changed: the script and the page files (the frozen exe counts as one file)."""
+    paths = [sys.executable] if FROZEN else [os.path.abspath(__file__)] + [os.path.join(WEB, f) for f in ("index.html", "app.js", "style.css")]
+    try:
+        return max(os.path.getmtime(p) for p in paths if os.path.exists(p))
+    except Exception:
+        return 0.0
+
+CODE_MTIME_AT_START = code_mtime()
+
+def code_is_stale():
+    """True when the script or the page on disk is newer than the running process: the page the browser
+    loads then expects routes this process does not have."""
+    return code_mtime() > CODE_MTIME_AT_START + 1
+
+def restart_self():
+    """Re-execute this program in place (same arguments), after the response has gone out."""
+    log("restarting on request")
+    def go():
+        time.sleep(0.6)
+        try:
+            save_cache()
+        except Exception:
+            pass
+        args = [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)]) + [a for a in sys.argv[1:] if a != "--inbox"]
+        if "--no-open" not in args:
+            args.append("--no-open")  # the page that asked is already open
+        try:
+            subprocess.Popen(args, cwd=HERE, close_fds=True)
+        finally:
+            os._exit(0)
+    threading.Thread(target=go, daemon=True).start()
 AVATARS = {}  # in-memory bytes cache
 
 def save_config():
@@ -1396,6 +1429,7 @@ def items_payload():
                 "discussions": discussions_payload(),
                 "recs": recs_payload(),
                 "zulip": zulip_status(),
+                "stale": code_is_stale(),
                 "settings": settings_payload()}
 
 def discussions_payload():
@@ -3026,6 +3060,10 @@ class Handler(BaseHTTPRequestHandler):
                     mark([u], "seen", True)
                     return self._send(play_url(u), "text/plain")
                 return self._send(download_url(u), "text/plain")
+            if p.path == "/api/restart":
+                self._send("restarting", "text/plain")
+                restart_self()
+                return
             if p.path == "/api/quit":
                 self._send("bye", "text/plain")
                 threading.Timer(0.5, lambda: os._exit(0)).start()
