@@ -3,18 +3,18 @@
 ## Run it from source
 
 ```
-git clone https://github.com/nyazbek/quietfeed
-cd quietfeed
-python quietfeed.py
+git clone https://github.com/nyazbek/feedel
+cd feedel
+python feedel.py
 ```
 
 Python 3.10 or newer, nothing to install. `pip install yt-dlp` and an mpv install give you playback and downloads; see the README.
 
-Your own data (`quietfeed.db`, `downloads/`) is written next to the script and is ignored by git. Never commit it. `--export` and `--import FILE` move it through JSON; `--help` lists the flags.
+Your own data (`feedel.db`, `downloads/`) is written next to the script and is ignored by git. Never commit it. `--export` and `--import FILE` move it through JSON; `--help` lists the flags.
 
 ## Where things are
 
-- `quietfeed.py` — the whole server, in sections: helpers, storage (the SQLite schema and everything that reads or writes it), state, subscriptions, youtube, twitter, rss, arxiv, refresh, import/follow, account sync, playback, web (the HTTP handler at the bottom).
+- `feedel.py` — the whole server, in sections: helpers, storage (the SQLite schema and everything that reads or writes it), state, subscriptions, youtube, twitter, rss, arxiv, refresh, import/follow, account sync, playback, web (the HTTP handler at the bottom).
 - `web/index.html`, `web/app.js`, `web/style.css` — the page. Vanilla JS, no build step. The page only ever talks to `localhost`; images from Google go through the server's proxy.
 - `ROADMAP.md` — where this is going and why. Read it before proposing a feature.
 
@@ -31,14 +31,14 @@ Your own data (`quietfeed.db`, `downloads/`) is written next to the script and i
 There is no test suite yet (a good first contribution). Run the server on another port so it does not clash with your own instance, and drive it with curl:
 
 ```
-python quietfeed.py --no-open --port 8766
+python feedel.py --no-open --port 8766
 curl localhost:8766/api/items
 curl -H Content-Type:application/json -d '{"ref":"math.PR","kind":"arxiv"}' localhost:8766/api/subs/add
 ```
 
 ## Releases
 
-Tag a version and push the tag; GitHub Actions builds `quietfeed-windows.exe` and `quietfeed-macos` and attaches them to the release.
+Tag a version and push the tag; GitHub Actions builds `feedel-windows.exe` and `feedel-macos` and attaches them to the release.
 
 ```
 git tag v0.2

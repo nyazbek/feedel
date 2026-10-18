@@ -1,4 +1,4 @@
-/* quietfeed front-end. Talks only to localhost; every YouTube image is proxied by the server. */
+/* feedel front-end. Talks only to localhost; every YouTube image is proxied by the server. */
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const KIND_LABEL = { yt: 'videos', tw: 'tweets', rss: 'posts', arxiv: 'papers' };
@@ -18,7 +18,7 @@ async function api(path, body) {
   const out = ct.includes('json') ? await r.json() : await r.text();
   if (!r.ok) {
     // a route this page knows but the server does not: the server is older than the page
-    if ((r.status === 404 || (r.status === 400 && out === 'bad request')) && path.startsWith('/api/')) { const n = $('#stale'); if (n) n.hidden = false; throw new Error('this copy of quietfeed is older than the page — restart it (notice at the top)'); }
+    if ((r.status === 404 || (r.status === 400 && out === 'bad request')) && path.startsWith('/api/')) { const n = $('#stale'); if (n) n.hidden = false; throw new Error('this copy of feedel is older than the page — restart it (notice at the top)'); }
     throw new Error((out && out.error) || out || r.statusText);
   }
   return out;
@@ -124,7 +124,7 @@ let talkStream = null, talkTopics = {}, talkSearch = null;
 function zulipStreams() { return ((data && data.zulip && data.zulip.streams) || []).map(s => s.name); }
 function curStream() {
   const ss = zulipStreams();
-  if (!talkStream || !ss.includes(talkStream)) talkStream = ss[0] || (data && data.zulip && data.zulip.stream) || 'quietfeed';
+  if (!talkStream || !ss.includes(talkStream)) talkStream = ss[0] || (data && data.zulip && data.zulip.stream) || 'feedel';
   return talkStream;
 }
 
@@ -277,7 +277,7 @@ async function fetchThread(t) {
   return msgs;
 }
 function markRead(t, msgs) {
-  // Zulip's own read flag, so its apps and quietfeed agree on what you have seen; the row's "n new" follows
+  // Zulip's own read flag, so its apps and feedel agree on what you have seen; the row's "n new" follows
   const ids = msgs.filter(m => m.read === false).map(m => m.id);
   if (!ids.length) return;
   msgs.forEach(m => { if (ids.includes(m.id)) m.read = true; });
@@ -286,7 +286,7 @@ function markRead(t, msgs) {
 async function openThread(host, topic, stream) {
   const key = hostKey(host);
   if (threads.has(key)) { closeThread(host); return; }
-  const t = { topic, stream: stream || (data.zulip && data.zulip.stream) || 'quietfeed', msgs: null, draft: '' };
+  const t = { topic, stream: stream || (data.zulip && data.zulip.stream) || 'feedel', msgs: null, draft: '' };
   threads.set(key, t);
   const box = mountThread(host, t);
   discLabel(host, true);
@@ -591,7 +591,7 @@ function openShare(art) {
   if (!z.site || !z.email || !z.api_key_set) {
     box.innerHTML = `<span class="meta">sharing goes to Zulip, and it is not set up yet — </span><button class="link" data-a="share-settings">open settings</button>`;
   } else {
-    const target = (z.streams || {})[it.kind] || z.stream || 'quietfeed';
+    const target = (z.streams || {})[it.kind] || z.stream || 'feedel';
     const options = (z.shown_streams || z.all_streams || [target]).map(s => `<option value="${esc(s)}" ${s === target ? 'selected' : ''}>#${esc(s)}</option>`).join('');
     box.innerHTML = `<textarea rows="3" placeholder="why is this worth their time? (LaTeX works: $…$)" data-share="note"></textarea>
       <input data-share="topic" value="${esc((it.title || '').slice(0, 60))}" placeholder="topic">
@@ -703,10 +703,10 @@ function fillSettings() {
   $('#s_fallback_browser').value = s.fallback_browser || '';
   $('#s_fallback_auto').textContent = s.fallback_browser ? '' : (s.fallback_browser_auto ? 'currently: ' + s.fallback_browser_auto : 'no browser detected');
   const z = s.zulip || {};
-  $('#z_site').value = z.site || ''; $('#z_stream').value = z.stream || 'quietfeed'; $('#z_email').value = z.email || '';
+  $('#z_site').value = z.site || ''; $('#z_stream').value = z.stream || 'feedel'; $('#z_email').value = z.email || '';
   $('#z_extra').value = (z.extra_streams || []).join(', ');
   $('#z_key').value = ''; $('#z_key').placeholder = z.api_key_set ? 'saved — leave empty to keep it' : 'Zulip → settings → account → API key';
-  for (const k of ['yt', 'arxiv', 'rss', 'tw']) { $('#z_s_' + k).value = (z.streams_set || {})[k] || ''; $('#z_s_' + k).placeholder = z.stream || 'quietfeed'; }
+  for (const k of ['yt', 'arxiv', 'rss', 'tw']) { $('#z_s_' + k).value = (z.streams_set || {})[k] || ''; $('#z_s_' + k).placeholder = z.stream || 'feedel'; }
   $('#z_recs').value = z.recs_stream || '';
   $('#z_status').textContent = '';
 }
@@ -874,7 +874,7 @@ function showSteps(d) {
   $('#fr-realm').textContent = d.realm ? `(${d.realm}, ${d.site})` : `(${d.site})`;
   const inv = $('#fr-invite'), no = $('#fr-noinvite');
   if (d.invite) { inv.href = d.invite; inv.hidden = false; no.hidden = true; }
-  else { inv.hidden = true; no.hidden = false; $('#fr-ask').href = d.organizer ? `mailto:${d.organizer}?subject=${encodeURIComponent('quietfeed: can I join the group?')}` : (d.site + '/accounts/go/'); }
+  else { inv.hidden = true; no.hidden = false; $('#fr-ask').href = d.organizer ? `mailto:${d.organizer}?subject=${encodeURIComponent('feedel: can I join the group?')}` : (d.site + '/accounts/go/'); }
   $('#fr-keypage').href = (d.site.startsWith('http') ? d.site : 'https://' + d.site) + '/#settings/account-and-privacy';
 }
 async function friendsClick(b) {
@@ -908,7 +908,7 @@ async function loadSync() {
   try { s = await api('/api/sync'); } catch (e) { return; }
   const when = x => x.at ? ' · ' + ago(x.at) + ' ago' : '';
   const g = s.google;
-  $('#gstatus').textContent = !g.configured ? 'needs client_secret.json next to quietfeed (see README)'
+  $('#gstatus').textContent = !g.configured ? 'needs client_secret.json next to feedel (see README)'
     : !g.connected ? 'not connected'
     : g.ok === false ? 'error: ' + g.error
     : g.count != null ? `connected · ${g.count} subscriptions, ${g.added} new${when(g)}` : 'connected · syncing on next refresh';
@@ -1005,7 +1005,7 @@ document.addEventListener('click', async e => {
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
-  if (b.id === 'quit') { if (confirm('stop quietfeed? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">quietfeed stopped. start it again to continue.</p></main>'; } return; }
+  if (b.id === 'quit') { if (confirm('stop feedel? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">feedel stopped. start it again to continue.</p></main>'; } return; }
   if (b.id === 'importbtn') { const t = $('#paste').value.trim(); if (t) { importText(t, ''); $('#paste').value = ''; } return; }
   if (b.id === 'gconnect') { connectGoogle(); return; }
   if (b.id === 'gdisconnect') { await api('/api/sync/google/disconnect', {}); loadSync(); return; }
@@ -1114,7 +1114,7 @@ $('#linkform').addEventListener('submit', async e => {
   const btn = $('#linkform button'); btn.disabled = true; btn.textContent = 'fetching…';
   try { await api('/api/inbox', { url: u, via: 'box' }); $('#linkq').value = ''; $('#linkform').hidden = true; kindFilter = 'inbox'; await load(); }
   catch (err) { toast(err.message, 5000); }
-  btn.disabled = false; btn.textContent = 'open in quietfeed';
+  btn.disabled = false; btn.textContent = 'open in feedel';
 });
 const drop = $('#drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });

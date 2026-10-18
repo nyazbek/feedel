@@ -1,10 +1,12 @@
 # your own data — never commit these
+feedel.db*
 quietfeed.db*
 config.json*
 state.json*
 cache.json*
 cache/
 downloads/
+feedel.log
 quietfeed.log
 client_secret.json
 google_token.json
