@@ -86,6 +86,10 @@ With Zulip set up (below), quietfeed reads your group's streams back too, and th
 
 Everything beyond that (people, private messages, stream settings, long history) is *in Zulip ↗*, one click away on every topic and thread.
 
+## Recommendations, from friends only
+
+The only recommender in quietfeed is a person who chose you. In the share box, *recommend to someone instead* lets you pick friends (or everyone) and write why; it posts to the recommendations stream in Zulip as "Nahuel recommends this to @Juan", so Juan is notified the Zulip way too. On the other side, everything recommended to you, by name or to everyone, collects under a **from friends** chip in your feed: the item itself with play, save and all the usual actions, who recommended it and their note, a *thanks* that reacts on their message, and the discussion one click away. A friend's recommendation of something already in your feed also shows as a line under that item. Nothing else is ever recommended.
+
 ## Sharing to Zulip
 
 The conversation lives in Zulip, not in quietfeed (see [ROADMAP.md](ROADMAP.md)). Every item also has **copy link** for sending it to a friend any other way. **share** opens a note box and posts the item and your note to a Zulip stream, as you, with one topic per item, so the group can discuss it there with threads, search and LaTeX.

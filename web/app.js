@@ -382,7 +382,19 @@ function renderFeed() {
   const s = data.settings;
   $('#when').textContent = data.refreshing ? 'refreshing…' : data.last_refresh ? 'updated ' + ago(data.last_refresh) + ' ago' : 'loading…';
   const inboxChip = (data.inbox.length || kindFilter === 'inbox') ? `<button data-f="inbox" class="${kindFilter === 'inbox' ? 'on' : ''}">inbox${data.inbox.length ? ' · ' + data.inbox.length : ''}</button>` : '';
-  $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '') + inboxChip;
+  const recCards = (data.recs && data.recs.cards) || [];
+  const recChip = (recCards.length || kindFilter === 'recs') ? `<button data-f="recs" class="${kindFilter === 'recs' ? 'on' : ''}">from friends${recCards.length ? ' · ' + recCards.length : ''}</button>` : '';
+  $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '') + inboxChip + recChip;
+  if (kindFilter === 'recs') {
+    $('#papers').hidden = true; $('#errs').innerHTML = '';
+    $('#list').innerHTML = recCards.length ? recCards.map(c => {
+      const it = { ...c.item, cid: c.item.cid || 'rec' };
+      const lines = c.by.map(b => `<div class="rec"><b>${esc(b.who)}</b>${c.for_all ? ' recommends this to everyone' : ' recommends this to you'}${b.note ? ': ' + esc(b.note) : ''} · ${ago(b.ts)} ago · ${b.thanked ? '<span>thanked</span>' : `<button data-a="thanks" data-msg="${b.msg_id}">thanks</button>`}</div>`).join('');
+      const disc = `<div class="disc"><button data-a="disc" data-topic="${esc(c.topic)}" data-stream="${esc(c.stream)}">${threads.has('id:' + it.id) ? 'close' : 'open'} discussion</button></div>`;
+      return article(it).replace(/<div class="(rec|disc)">[\s\S]*?<\/div>(?=<\/div><\/article>)/g, '').replace('</div></article>', lines + disc + '</div></article>');
+    }).join('') : '<div class="empty">nothing recommended to you yet. when a friend uses “recommend” on something, it lands here with their note.</div>';
+    return;
+  }
   if (kindFilter === 'inbox') {
     $('#papers').hidden = true; $('#errs').innerHTML = '';
     $('#list').innerHTML = data.inbox.length ? data.inbox.map(i => article(i).replace('</article>', inboxRow(i) + '</article>')).join('')
@@ -464,11 +476,16 @@ function srcBtn(i) {
   const name = i.author || (i.follow && i.follow.name) || '';
   return id && k !== 'arxiv' ? `<button class="src" data-src="${esc(k)}|${esc(id)}">${esc(name)}</button>` : esc(name);
 }
+function recLine(i) {
+  const by = data.recs && data.recs.by_id && data.recs.by_id[i.id];
+  if (!by || !by.length) return '';
+  return by.map(b => `<div class="rec"><b>${esc(b.who)}</b> recommends this${b.note ? ': ' + esc(b.note) : ''} · ${ago(b.ts)} ago · ${b.thanked ? '<span>thanked</span>' : `<button data-a="thanks" data-msg="${b.msg_id}">thanks</button>`}</div>`).join('');
+}
 function discLine(i) {
   const d = data.discussions && data.discussions[i.id];
-  if (!d) return '';
+  if (!d) return recLine(i);
   const open = threads.has('id:' + i.id);
-  return `<div class="disc">${esc(d.people.slice(0, 3).join(', '))}${d.people.length > 3 ? ' and others' : ''} talk about this in #${esc(d.stream || data.zulip.stream)} · ${d.count} message${d.count > 1 ? 's' : ''} · last ${ago(d.last_ts)} ago${d.new ? ` · <span class="new">${d.new} new</span>` : ''} · <button data-a="disc" data-topic="${esc(d.topic)}" data-stream="${esc(d.stream || '')}">${open ? 'close' : 'open'} discussion</button></div>`;
+  return recLine(i) + `<div class="disc">${esc(d.people.slice(0, 3).join(', '))}${d.people.length > 3 ? ' and others' : ''} talk about this in #${esc(d.stream || data.zulip.stream)} · ${d.count} message${d.count > 1 ? 's' : ''} · last ${ago(d.last_ts)} ago · <button data-a="disc" data-topic="${esc(d.topic)}" data-stream="${esc(d.stream || '')}">${open ? 'close' : 'open'} discussion</button></div>`;
 }
 function zulipTopicUrl(topic, stream) {
   const z = data.zulip || {}, enc = s => encodeURIComponent(s).replace(/%/g, '.');
@@ -542,7 +559,7 @@ async function setMark(id, field, on) {
 /* ------------------------------------------------------------ share to Zulip */
 
 function itemLink(i) { return i.kind === 'yt' ? 'https://www.youtube.com/watch?v=' + i.id : (i.link || i.id); }
-function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || (ytResults || []).find(i => i.id === id) || (data.inbox || []).find(i => i.id === id) || savedItems[id]; }
+function findItem(id) { return data.items.find(i => i.id === id) || (axResults || []).find(i => i.id === id) || (ytResults || []).find(i => i.id === id) || (data.inbox || []).find(i => i.id === id) || ((data.recs && data.recs.cards) || []).map(c => c.item).find(i => i.id === id) || savedItems[id]; }
 function snapshot(item) { return Object.fromEntries(Object.entries(item).filter(([k]) => ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment'].includes(k))); }
 
 function openShare(art) {
@@ -557,19 +574,30 @@ function openShare(art) {
     const options = (z.shown_streams || z.all_streams || [target]).map(s => `<option value="${esc(s)}" ${s === target ? 'selected' : ''}>#${esc(s)}</option>`).join('');
     box.innerHTML = `<textarea rows="3" placeholder="why is this worth their time? (LaTeX works: $…$)" data-share="note"></textarea>
       <input data-share="topic" value="${esc((it.title || '').slice(0, 60))}" placeholder="topic">
-      <div class="row"><button class="solid" data-a="share-send">post to</button><select data-share="stream">${options}</select><button class="link" data-a="share-cancel">cancel</button><span class="meta" data-share="status"></span></div>`;
+      <div class="row"><button class="solid" data-a="share-send">post to</button><select data-share="stream">${options}</select>
+        <button class="link" data-a="share-rec">recommend to someone instead</button><button class="link" data-a="share-cancel">cancel</button><span class="meta" data-share="status"></span></div>
+      <div class="people" hidden><span class="meta">recommend to</span> <label><input type="checkbox" data-share="all" checked> everyone</label><span data-share="people" class="meta">loading friends…</span>
+        <button class="solid" data-a="share-send-rec">recommend</button></div>`;
   }
   art.querySelector('.acts').after(box);
   box.querySelector('textarea')?.focus();
 }
-async function sendShare(art) {
+let people = null;
+async function showPeople(box) {
+  const row = box.querySelector('.people'); row.hidden = !row.hidden; if (row.hidden) return;
+  if (!people) { try { people = await api('/api/zulip/people'); } catch (e) { box.querySelector('[data-share=people]').textContent = e.message; return; } }
+  box.querySelector('[data-share=people]').innerHTML = people.map(p => `<label><input type="checkbox" data-share="to" value="${esc(p.name)}"> ${esc(p.name)}</label>`).join('') || 'nobody else here yet';
+}
+async function sendShare(art, recommend = false) {
   const box = art.querySelector('.share'), it = findItem(art.dataset.id);
   const note = box.querySelector('[data-share=note]').value, topic = box.querySelector('[data-share=topic]').value, st = box.querySelector('[data-share=status]');
   const stream = box.querySelector('[data-share=stream]')?.value || '';
+  const to = recommend && !box.querySelector('[data-share=all]').checked ? [...box.querySelectorAll('[data-share=to]:checked')].map(c => c.value) : [];
+  if (recommend && !box.querySelector('[data-share=all]').checked && !to.length) { st.textContent = 'pick someone, or everyone'; return; }
   st.textContent = 'posting…';
   try {
-    const r = await api('/api/share', { item: snapshot(it), note, topic, stream });
-    box.remove(); toast(`shared to #${r.stream} › ${r.topic}`, 4000);
+    const r = await api('/api/share', { item: snapshot(it), note, topic, stream, recommend, to });
+    box.remove(); toast(recommend ? `recommended to ${to.length ? to.join(', ') : 'everyone'} in #${r.stream}` : `shared to #${r.stream} › ${r.topic}`, 4000);
   } catch (e) { st.textContent = e.message; }
 }
 
@@ -630,6 +658,7 @@ function fillSettings() {
   $('#z_extra').value = (z.extra_streams || []).join(', ');
   $('#z_key').value = ''; $('#z_key').placeholder = z.api_key_set ? 'saved — leave empty to keep it' : 'Zulip → settings → account → API key';
   for (const k of ['yt', 'arxiv', 'rss', 'tw']) { $('#z_s_' + k).value = (z.streams_set || {})[k] || ''; $('#z_s_' + k).placeholder = z.stream || 'quietfeed'; }
+  $('#z_recs').value = z.recs_stream || '';
   $('#z_status').textContent = '';
 }
 async function testZulip() {
@@ -646,7 +675,7 @@ async function saveSettings(keepOpen) {
   patch.block_words = $('#s_block_words').value;
   patch.fallback_browser = $('#s_fallback_browser').value;
   patch.zulip = { site: $('#z_site').value, stream: $('#z_stream').value, email: $('#z_email').value, api_key: $('#z_key').value,
-    streams: { yt: $('#z_s_yt').value, arxiv: $('#z_s_arxiv').value, rss: $('#z_s_rss').value, tw: $('#z_s_tw').value }, extra_streams: $('#z_extra').value };
+    streams: { yt: $('#z_s_yt').value, arxiv: $('#z_s_arxiv').value, rss: $('#z_s_rss').value, tw: $('#z_s_tw').value }, extra_streams: $('#z_extra').value, recs_stream: $('#z_recs').value };
   try {
     data.settings = await api('/api/settings', patch);
     if ($('#z_key').value) { $('#z_key').value = ''; $('#z_key').placeholder = 'saved — leave empty to keep it'; }
@@ -916,6 +945,9 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'inbox-remove') { const it = findItem(id); await api('/api/inbox/remove', { url: it.url }); await load(); return; }
   if (b.dataset.a === 'share') { openShare(art); return; }
   if (b.dataset.a === 'share-send') { sendShare(art); return; }
+  if (b.dataset.a === 'share-rec') { showPeople(art.querySelector('.share')); return; }
+  if (b.dataset.a === 'share-send-rec') { sendShare(art, true); return; }
+  if (b.dataset.a === 'thanks') { b.disabled = true; try { await api('/api/recs/thanks', { msg_id: +b.dataset.msg }); b.textContent = 'thanked'; } catch (err) { b.disabled = false; toast(err.message); } return; }
   if (b.dataset.a === 'share-cancel') { art.querySelector('.share')?.remove(); return; }
   if (b.dataset.a === 'share-settings') { $('#settings').hidden = false; fillSettings(); window.scrollTo(0, 0); return; }
   if (b.dataset.a === 'abs') { const a = art.querySelector('.abs'); a.hidden = !a.hidden; b.textContent = a.hidden ? 'abstract' : 'hide abstract'; return; }

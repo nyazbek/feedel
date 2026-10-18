@@ -76,8 +76,10 @@ DEFAULT_CONFIG = {
     "sync": {"browser": ""},
     # where the conversation lives: "share" posts an item and your note to `stream`, as you, with your own API key;
     # "streams": where each kind of share goes (videos → #vids, papers → #papers…); empty means the default stream;
-    # "extra_streams": other streams the talk tab shows and lets you read, search and post in
-    "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""}, "extra_streams": []},
+    # "extra_streams": other streams the talk tab shows and lets you read, search and post in;
+    # "recs_stream": where recommendations between friends go; a message there mentioning you is a recommendation for you
+    "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
+              "extra_streams": [], "recs_stream": "recommendations"},
     "player": ["mpv", "--ytdl-format=bestvideo[height<=1080]+bestaudio/best", "{url}"],
     "download_dir": os.path.join(HERE, "downloads"),
     "refresh_minutes": 30,
@@ -368,7 +370,7 @@ def write_marks(db, field, ids):
     db.execute("DELETE FROM marks WHERE user_id = ? AND seen_at IS NULL AND saved_at IS NULL", (USER_ID,))
 
 def load_cache():
-    cache = {"durations": {}, "shorts": {}, "tweets": {}}
+    cache = {"durations": {}, "shorts": {}, "tweets": {}, "links": {}}
     with LOCK:
         for r in DB.execute("SELECT kind, key, value FROM cache").fetchall():
             cache.setdefault(r["kind"], {})[r["key"]] = json.loads(r["value"])
@@ -1267,6 +1269,7 @@ def settings_payload():
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
                       "streams": {k: zulip_stream_for(k) for k in KINDS}, "streams_set": z.get("streams") or {},
                       "all_streams": zulip_all_streams(), "extra_streams": parse_streams(z.get("extra_streams")), "shown_streams": zulip_streams(),
+                      "recs_stream": zulip_recs_stream(),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             **CONFIG["ui"]}
@@ -1282,6 +1285,7 @@ def items_payload():
                 "inbox": inbox_list(),
                 "followed": {k: [s.get("id") for s in sub_list(k)] for k in KINDS},
                 "discussions": discussions_payload(),
+                "recs": recs_payload(),
                 "zulip": zulip_status(),
                 "settings": settings_payload()}
 
@@ -1326,6 +1330,8 @@ def update_settings(patch):
                 z["streams"] = {k: str(patch["zulip"]["streams"].get(k, "")).strip().lstrip("#") for k in KINDS}
             if "extra_streams" in patch["zulip"]:  # the share streams are always shown, so they are not stored twice
                 z["extra_streams"] = [s for s in parse_streams(patch["zulip"]["extra_streams"]) if s not in zulip_all_streams()]
+            if "recs_stream" in patch["zulip"]:
+                z["recs_stream"] = str(patch["zulip"]["recs_stream"]).strip().lstrip("#") or "recommendations"
         save_config()
         return settings_payload()
 
@@ -2263,11 +2269,13 @@ def zulip_stream_for(kind):
     z = CONFIG.get("zulip") or {}
     return ((z.get("streams") or {}).get(kind) or "").strip() or zulip_cfg()[3]
 
+def zulip_recs_stream():
+    return ((CONFIG.get("zulip") or {}).get("recs_stream") or "").strip() or "recommendations"
+
 def zulip_all_streams():
-    """Every stream shares can go to: the default plus each per-kind one, without repeats."""
+    """Every stream shares can go to, plus the recommendations stream: the default, each per-kind one, without repeats."""
     out = [zulip_cfg()[3]]
-    for k in KINDS:
-        s = zulip_stream_for(k)
+    for s in [zulip_stream_for(k) for k in KINDS] + [zulip_recs_stream()]:
         if s not in out:
             out.append(s)
     return out
@@ -2311,6 +2319,15 @@ def zulip_request(path, data=None, params=None, method=None):
             pass
         raise RuntimeError(f"Zulip said {e.code}: {msg[:200]}")
     return json.loads(r)
+
+def zulip_people():
+    """The humans on the Zulip, minus me and bots: who a recommendation can be addressed to."""
+    me = zulip_me()
+    r = zulip_request("/users")
+    out = [{"user_id": u.get("user_id"), "name": u.get("full_name", ""), "email": u.get("email", "")}
+           for u in r.get("members", []) if u.get("is_active", True) and not u.get("is_bot") and u.get("user_id") != me.get("user_id")]
+    return sorted(out, key=lambda u: u["name"].lower())
+
 
 def zulip_me():
     """Who you are on Zulip (id, name), asked once per run; needed to tell your own messages and reactions apart."""
@@ -2379,6 +2396,8 @@ def zulip_message(m, site, me, stream=None):
     return {"id": m.get("id"), "who": m.get("sender_full_name", ""), "email": sender, "ts": m.get("timestamp"),
             "topic": m.get("subject", ""), "stream": stream or m.get("display_recipient") or "", "content": content,
             "keys": sorted({k for k in (canon_key(l) for l in links) if k}), "text": strip_html(content, 200),
+            "links": [l for l in links if canon_key(l)],
+            "mentions": re.findall(r'<span class="user-mention[^"]*"[^>]*data-user-id="([^"]+)"', content),
             "read": "read" in (m.get("flags") or []), "mine": bool(sender) and sender == me.get("email") or m.get("sender_id") == me.get("user_id"),
             "edited": bool(m.get("last_edit_timestamp")), "reactions": sorted(reactions.values(), key=lambda r: -r["count"])}
 
@@ -2410,6 +2429,7 @@ def zulip_fetch_stream(stream=None):
                 prev = STATE["zulip"]["streams"].get(s) or {}
                 STATE["zulip"]["streams"][s] = {**prev, "error": str(ex), "at": prev.get("at") or time.time(), "messages": prev.get("messages", [])}
             log(f"  zulip #{s}:", ex)
+    threading.Thread(target=resolve_rec_items, daemon=True).start()
     return STATE["zulip"]["streams"].get(stream) if stream else STATE["zulip"]
 
 def zulip_state(stream):
@@ -2560,10 +2580,71 @@ def zulip_edit(mid, content, stream=None):
         zulip_fetch_stream(stream)
     return {"ok": True, "id": mid}
 
-def zulip_share(item, note="", topic="", stream=""):
+def recommendations():
+    """What friends recommended to me: messages in the recommendations stream that mention nobody (for everyone)
+    or mention me, grouped by the thing they link to. My own recommendations are not for me."""
+    me = STATE.get("zulip_me") or {}
+    recs_stream = zulip_recs_stream()
+    out = {}
+    for m in zulip_messages(recs_stream):
+        if not m.get("keys") or m.get("mine"):
+            continue
+        mentions = m.get("mentions") or []
+        if mentions and "*" not in mentions and str(me.get("user_id")) not in mentions:
+            continue
+        key, link = m["keys"][0], m["links"][0] if m.get("links") else ""
+        qm = re.search(r"<blockquote>(.*?)</blockquote>", m["content"], re.S)
+        note = strip_html(qm.group(1), 600) if qm else ""
+        thanked = any(r.get("mine") and r.get("name") in ("+1", "thumbs_up") for r in m.get("reactions", []))
+        rec = out.setdefault(key, {"key": key, "link": link, "topic": m["topic"], "stream": recs_stream, "by": [], "last_ts": m["ts"],
+                                   "for_all": not mentions})
+        rec["by"].append({"who": m["who"], "note": note, "ts": m["ts"], "msg_id": m["id"], "thanked": thanked})
+        rec["last_ts"] = max(rec["last_ts"], m["ts"])
+        rec["for_all"] = rec["for_all"] and not mentions
+    return sorted(out.values(), key=lambda r: -r["last_ts"])
+
+def rec_item_for(key, link):
+    """The item a recommendation points at: something already in the feed, inbox or library, else a resolved link."""
+    for it in STATE["items"]:
+        if item_key(it) == key:
+            return it
+    for it in inbox_list():
+        if item_key(it) == key:
+            return it
+    for it in SEEN_STATE["saved"].values():
+        if isinstance(it, dict) and item_key(it) == key:
+            return it
+    cached = CACHE.setdefault("links", {}).get(key)
+    return cached
+
+def resolve_rec_items():
+    """Resolve recommended links quietfeed has never seen, once each, in the background."""
+    for r in recommendations():
+        if r.get("link") and rec_item_for(r["key"], r["link"]) is None:
+            try:
+                it = resolve_link(r["link"], "friend")
+                it["cid"] = it.get("cid") or "rec"
+                cache_put("links", r["key"], it)
+            except Exception as ex:
+                cache_put("links", r["key"], {"kind": "rss", "id": r["link"], "title": r["link"], "author": "", "ts": r["last_ts"], "link": r["link"], "desc": "", "error": str(ex)})
+    save_cache()
+
+def recs_payload():
+    """For the page: the recommendation cards (with their items) and, by item id, who recommended it."""
+    cards, by_id = [], {}
+    for r in recommendations():
+        it = rec_item_for(r["key"], r["link"])
+        if it is None:
+            continue
+        card = {**r, "item": {**it, "tags": it.get("tags") or []}}
+        cards.append(card)
+        by_id[it.get("id")] = [{"who": b["who"], "note": b["note"], "ts": b["ts"], "msg_id": b["msg_id"], "thanked": b["thanked"]} for b in r["by"]]
+    return {"cards": cards, "by_id": by_id}
+
+def zulip_share(item, note="", topic="", stream="", recommend=False, to=()):
     """Post an item and your note to the stream for its kind (videos to #vids, papers to #papers, as configured),
-    or to the stream given. The message is plain Zulip markdown, so LaTeX in the note renders there, and the
-    topic defaults to the item's title."""
+    or to the stream given. With recommend=True it goes to the recommendations stream as "X recommends … to @Y",
+    mentioning each person in `to` (nobody mentioned = for everyone). Plain Zulip markdown, so LaTeX renders."""
     k = item.get("kind", "")
     title = (item.get("title") or item.get("id") or "").strip()
     label = {"yt": "video", "tw": "tweet", "rss": "post", "arxiv": "paper"}.get(k, "link")
@@ -2578,7 +2659,14 @@ def zulip_share(item, note="", topic="", stream=""):
         lines.append("> " + title.replace("\n", "\n> "))
     if k == "arxiv" and item.get("pdf"):
         lines.append(f"[pdf]({item['pdf']})")
-    if note.strip():
+    if recommend:
+        me = zulip_me()
+        who = ", ".join(f"@**{n}**" for n in to if n) or "everyone"
+        lines.insert(0, f"**{me.get('full_name') or me.get('name') or 'someone'}** recommends this to {who}")  # bold only the name: @**x** is a mention
+        if note.strip():
+            lines += ["", "> " + note.strip().replace("\n", "\n> ")]
+        stream = zulip_recs_stream()
+    elif note.strip():
         lines += ["", note.strip()]
     topic = (topic.strip() or title or label)[:60]
     stream = (stream or "").strip() or zulip_stream_for(k)
@@ -2653,6 +2741,8 @@ class Handler(BaseHTTPRequestHandler):
                 st = zulip_state(stream) if stream else {}
                 return self._send({"topics": topics_with_items(zulip_topics(stream))[:200], "stream": stream, "at": st.get("at"),
                                    "error": st.get("error"), "on": zulip_ready(), "streams": zulip_status()["streams"]})
+            if p.path == "/api/zulip/people":
+                return self._send(zulip_people())
             if p.path == "/api/zulip/topic":
                 return self._send(zulip_topic_messages(q.get("name", [""])[0], q.get("stream", [""])[0] or None))
             if p.path == "/api/zulip/search":
@@ -2776,7 +2866,12 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/share":
                 if not isinstance(body.get("item"), dict):
                     return self._send({"error": "nothing to share"}, code=400)
-                return self._send(zulip_share(body["item"], str(body.get("note", "")), str(body.get("topic", "")), str(body.get("stream", ""))))
+                return self._send(zulip_share(body["item"], str(body.get("note", "")), str(body.get("topic", "")), str(body.get("stream", "")),
+                                              bool(body.get("recommend")), [str(x) for x in (body.get("to") or [])]))
+            if p.path == "/api/recs/thanks":
+                zulip_react(body.get("msg_id"), "+1")
+                threading.Thread(target=zulip_fetch_stream, daemon=True).start()
+                return self._send({"ok": True})
             if p.path == "/api/subs/add":
                 kind, ref = parse_ref(str(body.get("ref", "")), body.get("kind", "yt"))
                 if not ref:
