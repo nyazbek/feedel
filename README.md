@@ -102,22 +102,35 @@ Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e
 
 ## Settings (the gear)
 
-Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, hide Shorts from the feed, minimum video length, a per-source cap so one prolific channel cannot drown the rest, and block words (`/regex/` allowed). The theme button cycles auto / light / dark.
+Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, hide Shorts from the feed, minimum video length, a per-source cap so one prolific channel cannot drown the rest, block words (`/regex/` allowed), and whether quietfeed opens in its own window. The theme button cycles auto / light / dark.
+
+## Its own window
+
+`python quietfeed.py --window` (or the exe with `--window`, or the setting **open in its own window** under the gear, which applies from the next start) shows the page in a native window titled quietfeed instead of a browser tab: WebView2 (Edge) on Windows, WebKit on macOS. The server runs in the same process as always. Closing the window hides it to a tray icon whose menu is *open*, *refresh* and *quit*; quitting from there, or *Settings → quit quietfeed*, stops the server. The window remembers its size and position. Launching quietfeed again while it runs brings the window back, and the link handler (`--open URL`) shows the link in it.
+
+It needs three optional packages, imported only in window mode, so the server itself stays standard-library only:
+
+```
+pip install pywebview pystray pillow
+```
+
+Without them `--window` falls back to the browser exactly as before and writes one line to the log saying what to install. `--browser` opens the browser this once when the setting is on; `--no-open` opens nothing.
 
 ## Building the executable
 
 ```
-pip install pyinstaller yt-dlp
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name quietfeed --add-data "web;web" --collect-submodules yt_dlp quietfeed.py
+pip install pyinstaller yt-dlp pywebview pystray pillow
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name quietfeed --add-data "web;web" --collect-submodules yt_dlp --collect-all webview --collect-submodules pystray --collect-submodules PIL quietfeed.py
 ```
 
-`dist\quietfeed.exe` is self-contained: the page, yt-dlp and everything else are inside. It writes `quietfeed.db` and `quietfeed.log` next to itself, so put it in its own folder. It has no console window; *Settings → quit quietfeed* stops it. If no `yt-dlp.exe` is installed, mpv streams through the exe itself, which answers as yt-dlp when asked. Windows SmartScreen will warn once about an unsigned program; some antivirus products dislike single-file PyInstaller builds, in which case drop `--onefile` and ship the `dist\quietfeed` folder instead.
+`dist\quietfeed.exe` is self-contained: the page, yt-dlp, the window libraries and everything else are inside (`--collect-all webview` is pywebview; leave the three window packages out of both lines for a browser-only build). It writes `quietfeed.db` and `quietfeed.log` next to itself, so put it in its own folder. It has no console window; *Settings → quit quietfeed* stops it, as does *quit* in the tray menu when it runs in its own window. If no `yt-dlp.exe` is installed, mpv streams through the exe itself, which answers as yt-dlp when asked. Windows SmartScreen will warn once about an unsigned program; some antivirus products dislike single-file PyInstaller builds, in which case drop `--onefile` and ship the `dist\quietfeed` folder instead.
 
 ## Files
 
 - `quietfeed.db` — one SQLite file with everything: settings, what you follow, seen and saved items with your tags and notes, the items themselves (kept 90 days after they leave their feed; saved ones forever) and the duration / Shorts cache. Back it up by copying it. `python quietfeed.py --export > backup.json` dumps it all as JSON; `python quietfeed.py --import backup.json` merges a dump (or an old `config.json` / `state.json` / `cache.json`) back in, adding and never removing. Open it with any SQLite tool to look around.
 - `config.json`, `state.json`, `cache.json` — the files older versions used. They are migrated into `quietfeed.db` the first time this version runs and renamed `*.json.migrated`.
 - `cache/avatars/` — avatar images. Safe to delete.
+- `cache/webview/` — the window's own browser profile (theme choice and the like) when quietfeed runs in its own window. Safe to delete.
 - `downloads/` — what the **download** button saves.
 
 ## Twitter caveat
