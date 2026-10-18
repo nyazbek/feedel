@@ -1032,13 +1032,17 @@ def tw_syndication(tid):
     cache_put("tweets", tid, out)
     return out
 
-def tw_nitter_item(block):
-    """One Nitter timeline item (a block of its HTML) → {id, link, user, name, text, ts}."""
+def tw_nitter_item(block, tid=None):
+    """One Nitter timeline item (a block of its HTML) → {id, link, user, name, text, ts}. The page's own post
+    (main-tweet) carries no permalink anchor, so its id is passed in; its text is the full one, which matters
+    for long posts that the syndication endpoint cuts at 280 characters."""
     um = re.search(r'class="username"[^>]*>@?([A-Za-z0-9_]+)<', block)
     nm = re.search(r'class="fullname"[^>]*title="([^"]*)"', block)
     lm = re.search(r'class="tweet-link" href="/([A-Za-z0-9_]+)/status/(\d+)', block)
     dm = re.search(r'class="tweet-date"><a[^>]*title="([^"]*)"', block)
-    cm = re.search(r'class="tweet-content[^"]*"[^>]*>(.*?)</div>\s*(?:<div class="attachments"|<div class="tweet-stats"|<div class="quote|<div class="card|</div>)', block, re.S)
+    cm = re.search(r'class="tweet-content[^"]*"[^>]*>(.*?)</div>\s*(?:<p class="tweet-published"|<div class="attachments"|<div class="tweet-stats"|<div class="quote|<div class="card|</div>)', block, re.S)
+    if not lm and tid and um:
+        lm = re.match(r"(.*)/(.*)", f"{um.group(1)}/{tid}")
     if not lm:
         return None
     ts = None
@@ -1062,18 +1066,11 @@ def tw_nitter_items(seg):
             out.append(it)
     return out
 
-def tw_thread(url):
-    """A post with its context: the posts it replies to, the author's own continuation (the thread), and other
-    people's replies. From a Nitter conversation page when an instance answers; otherwise only the parents, from
-    X's public syndication endpoint. Cached for twenty minutes."""
-    m = re.search(r"/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d+)", url)
-    if not m:
-        raise RuntimeError("that is not a link to a post")
-    user, tid = m.group(1), m.group(2)
-    cached = CACHE["threads"].get(tid)
-    if cached and cached.get("at", 0) > time.time() - 1200:
-        return cached
-    out = None
+def tw_nitter_page(user, tid, want_after=False):
+    """A post's conversation page from the first Nitter instance that answers: {before, main, after, replies}.
+    Instances disagree on how much of a thread they list, so when the first one shows no continuation and one
+    is expected (want_after), a second instance gets a chance and the longer answer wins."""
+    best = None
     for inst in CONFIG["twitter"].get("nitter_instances", []):
         try:
             page = fetch(f"{inst.rstrip('/')}/{user}/status/{tid}", timeout=15).decode("utf-8", "ignore")
@@ -1088,36 +1085,102 @@ def tw_thread(url):
             ends = [page.find(e, i + 1) for e in end_markers]
             ends = [e for e in ends if e > 0]
             return page[i:min(ends)] if ends else page[i:]
-        before = tw_nitter_items(seg('class="before-tweet', ['class="main-tweet"']))
-        main = tw_nitter_items(seg('class="main-tweet"', ['class="after-tweet', 'class="replies"', 'id="r"']))
-        after = tw_nitter_items(seg('class="after-tweet', ['class="replies"', 'id="r"']))
-        replies = tw_nitter_items(seg('class="replies"', ['<footer', '</body>']))
-        if not main:  # Nitter renders the page's own post without a permalink anchor; the syndication data has it
-            d = tw_syndication(tid) or {}
-            main = [{"id": tid, "link": f"https://x.com/{user}/status/{tid}", "user": (d.get("user") or user).lower(), "name": d.get("name", ""),
-                     "text": d.get("text", ""), "ts": d.get("ts") or time.time(), "media": bool(d.get("video") or d.get("photos"))}]
-        me = main[0]["user"].lower()
-        out = {"before": before, "tweet": main[0], "after": [a for a in after if a["user"] == me],
-               "replies": [r for r in replies if r["id"] not in {a["id"] for a in after}][:40], "source": "nitter", "at": time.time()}
-        break
-    if out is None:  # no instance answered: parents only, through the syndication endpoint
+        main_block = seg('class="main-tweet"', ['class="after-tweet', 'class="replies"', 'id="r"'])
+        main = tw_nitter_item(main_block, tid)
+        got = {"before": tw_nitter_items(seg('class="before-tweet', ['class="main-tweet"'])),
+               "main": [main] if main else [],
+               "after": tw_nitter_items(seg('class="after-tweet', ['class="replies"', 'id="r"'])),
+               "replies": tw_nitter_items(seg('class="replies"', ['<footer', '</body>']))}
+        if best is None or len(got["after"]) > len(best["after"]):
+            best = got
+        if best["after"] or not want_after:
+            break
+        want_after = False  # one second opinion is enough
+    return best
+
+def tw_thread(url):
+    """A post with its whole thread: every post of the author's chain from its first post to its last, wherever
+    you clicked in it, plus the posts it replies to (by other people) and other people's replies. From Nitter
+    conversation pages when an instance answers; otherwise only the parents, from X's public syndication
+    endpoint. Cached for twenty minutes."""
+    m = re.search(r"/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d+)", url)
+    if not m:
+        raise RuntimeError("that is not a link to a post")
+    user, tid = m.group(1), m.group(2)
+    cached = CACHE["threads"].get(tid)
+    if cached and "posts" in cached and cached.get("at", 0) > time.time() - 1200:
+        return cached
+
+    def from_syndication(pid, who=""):
+        d = tw_syndication(pid) or {}
+        return {"id": pid, "link": f"https://x.com/{d.get('user') or who or 'i'}/status/{pid}", "user": (d.get("user") or who).lower(),
+                "name": d.get("name", ""), "text": d.get("text", ""), "ts": d.get("ts") or time.time(),
+                "media": bool(d.get("video") or d.get("photos"))}
+
+    def extend_from_cache(posts, me):
+        # posts of the author already known from the feed (their syndication data is cached) that reply into the thread
+        grew = True
+        while grew:
+            grew = False
+            for pid, d in list(CACHE["tweets"].items()):
+                if d and pid not in posts and (d.get("user") or "").lower() == me and d.get("reply_to") in posts:
+                    posts[pid] = from_syndication(pid, me)
+                    grew = True
+
+    page = tw_nitter_page(user, tid, want_after=True)
+    if page is None:  # no instance answered: parents only, through the syndication endpoint
         before, cur, hops = [], tid, 0
         while hops < 8:
             d = tw_syndication(cur)
             if not d or not d.get("reply_to"):
                 break
-            p = tw_syndication(d["reply_to"])
-            if not p:
-                break
-            before.insert(0, {"id": d["reply_to"], "link": f"https://x.com/{p.get('user') or 'i'}/status/{d['reply_to']}", "user": p.get("user", ""),
-                              "name": p.get("name", ""), "text": p.get("text", ""), "ts": p.get("ts") or time.time(), "media": bool(p.get("video") or p.get("photos"))})
+            before.insert(0, from_syndication(d["reply_to"], d.get("reply_to_user", "")))
             cur, hops = d["reply_to"], hops + 1
-        d = tw_syndication(tid) or {}
-        out = {"before": before, "tweet": {"id": tid, "link": f"https://x.com/{user}/status/{tid}", "user": user.lower(), "name": d.get("name", ""),
-                                            "text": d.get("text", ""), "ts": d.get("ts") or time.time(), "media": bool(d.get("video"))},
-               "after": [], "replies": [], "source": "syndication", "at": time.time(),
-               "note": "no Nitter instance answered, so only the posts this one replies to are shown"}
-    for t in out["before"] + out["after"]:  # videos in the thread are playable too
+        main = from_syndication(tid, user)
+        me = main["user"]
+        k = len(before)
+        while k > 0 and before[k - 1]["user"] == me:
+            k -= 1
+        posts = {p["id"]: p for p in before[k:] + [main]}
+        extend_from_cache(posts, me)
+        posts = sorted(posts.values(), key=lambda p: int(p["id"]))
+        index = next((i for i, p in enumerate(posts) if p["id"] == tid), 0)
+        out = {"before": before[:k], "tweet": main, "posts": posts, "index": index, "after": posts[index + 1:], "replies": [],
+               "source": "syndication", "at": time.time(),
+               "note": "no Nitter instance answered: only the posts this one replies to and the ones already in your feed are shown"}
+        cache_put("threads", tid, out)
+        return out
+
+    main = page["main"][0] if page["main"] else from_syndication(tid, user)
+    main["user"] = main["user"].lower()
+    me = main["user"]
+    before = page["before"]
+    k = len(before)  # the author's own posts directly above this one belong to the thread; the rest is "in reply to"
+    while k > 0 and before[k - 1]["user"] == me:
+        k -= 1
+    own_above, others_above = before[k:], before[:k]
+    root = own_above[0] if own_above else main
+    chain = own_above + [main] + [a for a in page["after"] if a["user"] == me]
+    pool = list(page["replies"])
+    if root["id"] != main["id"]:  # the continuation is listed in full only on the thread's first post
+        rp = tw_nitter_page(root["user"], root["id"], want_after=True)
+        if rp:
+            chain = [root] + [a for a in rp["after"] if a["user"] == me] + chain
+            pool += rp["replies"]
+    posts = {p["id"]: p for p in chain}
+    # the author's other posts in the conversation that reply into the thread (Nitter files them under replies)
+    cands = [p for p in pool if p["user"] == me and p["id"] not in posts]
+    for p in sorted(cands, key=lambda p: int(p["id"])):
+        d = tw_syndication(p["id"]) or {}
+        if d.get("reply_to") in posts:
+            posts[p["id"]] = p
+    extend_from_cache(posts, me)
+    ordered = sorted(posts.values(), key=lambda p: int(p["id"]))
+    index = next((i for i, p in enumerate(ordered) if p["id"] == main["id"]), 0)
+    out = {"before": others_above, "tweet": main, "posts": ordered, "index": index,
+           "after": ordered[index + 1:], "replies": [r for r in page["replies"] if r["user"] != me and r["id"] not in posts][:40],
+           "source": "nitter", "at": time.time()}
+    for t in out["before"] + out["posts"]:  # videos in the thread are playable too
         media = tw_syndication(t["id"]) if t.get("media") else None
         if media and media.get("video"):
             t.update({k: media[k] for k in ("video", "mp4", "thumb", "dur")})

@@ -173,6 +173,7 @@ article.digest .desc span{display:block;color:var(--mut)}
 .twpost .who b{font-weight:600}
 .twpost .who .n{color:var(--faint);font-weight:600}
 .twpost.before,.twpost.reply{opacity:.8}
+.twpost.cur{border-left:2px solid var(--accent);padding-left:10px;margin-left:-12px}
 .twpost .tweet{font-size:14.5px}
 .twpost .acts{margin-top:4px}
 .threp summary{cursor:pointer;margin-top:8px}

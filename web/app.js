@@ -677,9 +677,9 @@ async function sendShare(art, recommend = false) {
 
 /* ------------------------------------------------------------ threads of posts on X */
 
-function twPost(t, cls = '') {
+function twPost(t, cls = '', num = '', tag = '') {
   const vid = t.video ? `<button data-a="tw-play" data-url="${esc(t.mp4 || t.link)}">▶ play${t.dur ? ' · ' + dur(t.dur) : ''}</button>` : (t.media ? '<span class="meta">has media · </span>' : '');
-  return `<div class="twpost ${cls}"><div class="who"><b>${esc(t.name || '@' + t.user)}</b> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a></span></div>
+  return `<div class="twpost ${cls}"><div class="who">${num ? `<span class="n">${num}</span> ` : ''}<b>${esc(t.name || '@' + t.user)}</b> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a>${tag ? ' · ' + tag : ''}</span></div>
     <div class="tweet">${esc(t.text)}</div>${vid ? `<div class="acts">${vid}</div>` : ''}</div>`;
 }
 async function openTwThread(art) {
@@ -692,12 +692,17 @@ async function openTwThread(art) {
     const me = t.tweet ? t.tweet.user : '';
     const parts = [];
     if (t.before.length) parts.push(`<div class="thsec">in reply to</div>` + t.before.map(p => twPost(p, 'before')).join(''));
-    if (t.after.length) parts.push(`<div class="thsec">the thread continues</div>` + t.after.map((p, k) => twPost(p, 'after').replace('<div class="who">', `<div class="who"><span class="n">${k + 2}/</span> `)).join(''));
+    const posts = t.posts || [t.tweet].concat(t.after || []);
+    const idx = t.index == null ? 0 : t.index;
+    if (posts.length > 1) {
+      parts.push(`<div class="thsec">the whole thread · ${posts.length} posts</div>` +
+        posts.map((p, k) => twPost(p, k === idx ? 'cur' : 'after', `${k + 1}/`, k === idx ? 'this post' : '')).join(''));
+    }
     if (t.replies.length) {
       const others = t.replies.filter(r => r.user !== me);
       if (others.length) parts.push(`<details class="threp"><summary class="meta">${others.length} repl${others.length === 1 ? 'y' : 'ies'} from others</summary>${others.map(p => twPost(p, 'reply')).join('')}</details>`);
     }
-    if (!parts.length) parts.push(`<div class="meta">${t.note || 'a single post: nothing before it and no continuation by the author'}</div>`);
+    if (!parts.length) parts.push(`<div class="meta">${t.note || 'a single post: nothing before it, no continuation by the author and no replies'}</div>`);
     else if (t.note) parts.push(`<div class="meta">${esc(t.note)}</div>`);
     box.innerHTML = `<div class="row thhead"><span class="meta">thread</span><span class="grow"></span><button class="link" data-a="twthread-close">close</button></div>` + parts.join('');
   } catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
