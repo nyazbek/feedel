@@ -7,24 +7,25 @@
 <script>try{const t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main>
-<header>
+<div class="shell">
+<aside class="side">
   <h1>quietfeed</h1>
   <nav class="views">
-    <button data-v="feed" class="on">your feed</button>
-    <button data-v="library">library</button>
-    <button data-v="following">following</button>
+    <button data-v="feed" class="on"><span class="ic">☰</span>your feed</button>
+    <button data-v="library"><span class="ic">◇</span>library</button>
+    <button data-v="following"><span class="ic">◎</span>following</button>
   </nav>
   <div class="tools">
     <button id="theme" class="icon" title="theme: auto / light / dark">◐</button>
     <button id="gear" class="icon" title="settings">⚙</button>
   </div>
-</header>
+</aside>
+<main>
 
 <div id="settings" class="panel" hidden>
   <div class="grid2">
@@ -177,6 +178,7 @@
   </div>
 </section>
 </main>
+</div>
 <div id="msg"></div>
 <script src="/app.js"></script>
 </body>
