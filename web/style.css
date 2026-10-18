@@ -202,6 +202,14 @@ article.digest .desc span{display:block;color:var(--mut)}
 #newtopic .row{margin:0}
 #talksearch{margin-bottom:6px}
 
+/* ---- friends */
+.steps{margin:12px 0 0;padding-left:22px;font-size:14px}
+.steps li{margin:8px 0}
+.steps li b{font-weight:600}
+.people-grid{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.pill{font-size:13px;padding:3px 11px;border:1px solid var(--line2);border-radius:var(--pill);background:var(--bg)}
+#fr-mycode{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut)}
+
 /* ---- library, following, source pages */
 .lib{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:8px;font-size:13px;color:var(--mut)}
 .lib input{font-size:13px;padding:3px 9px}

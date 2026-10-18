@@ -20,6 +20,7 @@
     <button data-v="talk"><span class="ic">◌</span>talk</button>
     <button data-v="library"><span class="ic">◇</span>library</button>
     <button data-v="following"><span class="ic">◎</span>following</button>
+    <button data-v="friends"><span class="ic">◉</span>friends</button>
   </nav>
   <div class="tools">
     <button id="theme" class="icon" title="theme: auto / light / dark">◐</button>
@@ -113,6 +114,43 @@
   </form>
   <div id="talkerrs"></div>
   <div id="talklist"></div>
+</section>
+
+<section id="view-friends" hidden>
+  <div class="panel" id="fr-status">
+    <h2>your group</h2>
+    <p class="meta">quietfeed talks to your friends through a Zulip organization: that is where discussions, shares and recommendations live. Zulip is free for small groups, renders LaTeX, and has its own apps for when you are away from here.</p>
+    <div id="fr-state" class="meta">…</div>
+    <div id="fr-people"></div>
+    <div class="row"><button id="fr-test" class="link">check connection</button><button id="fr-subscribe" class="link">join the group's streams</button><span class="meta" id="fr-note"></span></div>
+  </div>
+
+  <div class="panel" id="fr-join">
+    <h2>join a friend's group</h2>
+    <p class="meta">Your friend sends you a <b>setup code</b> from their quietfeed. Paste it here and the three steps below do the rest.</p>
+    <div class="row"><input id="fr-code" placeholder="qf1.…" autocomplete="off"><button id="fr-apply" class="solid">use this code</button></div>
+    <ol class="steps" id="fr-steps" hidden>
+      <li><b>Create your account</b> on the group's Zulip <span class="meta" id="fr-realm"></span> — <a id="fr-invite" href="#" target="_blank" rel="noopener">open the invitation ↗</a> <span class="meta" id="fr-noinvite" hidden>(no invitation link in the code: <a id="fr-ask" href="#">ask the organizer for access</a>)</span></li>
+      <li><b>Get your API key</b>: once signed in, <a id="fr-keypage" href="#" target="_blank" rel="noopener">open your Zulip account settings ↗</a> and copy the API key.</li>
+      <li><b>Paste it here</b> with the e-mail you used:
+        <div class="row"><input id="fr-email" placeholder="you@example.com"><input id="fr-key" type="password" placeholder="API key" autocomplete="off"><button id="fr-connect" class="solid">connect</button><span class="meta" id="fr-connect-status"></span></div></li>
+    </ol>
+  </div>
+
+  <div class="panel" id="fr-invitepanel">
+    <h2>invite friends</h2>
+    <p class="meta">Two things get a friend in: an invitation to the Zulip (a link they open, or an e-mail Zulip sends them) and the setup code that points their quietfeed at this group.</p>
+    <div class="row sync"><b>invitation link</b><input id="fr-link" placeholder="paste a reusable invitation link from Zulip, or create one"><button id="fr-mklink" class="link">create one</button></div>
+    <div class="row sync"><b>organizer contact</b><input id="fr-organizer" placeholder="your e-mail, so friends know whom to ask"></div>
+    <div class="row sync"><b>e-mail invitations</b><input id="fr-emails" placeholder="ana@example.com, juan@example.com"><button id="fr-sendmail" class="link">send through Zulip</button></div>
+    <div class="row sync"><b>setup code</b><input id="fr-mycode" readonly><button id="fr-copycode" class="solid">copy code</button></div>
+    <div class="meta" id="fr-invite-status"></div>
+  </div>
+
+  <div class="panel">
+    <h2>no group yet?</h2>
+    <p class="meta">Create a Zulip organization at <a href="https://zulip.com/new/" target="_blank" rel="noopener">zulip.com/new</a> (free, a couple of minutes), create the streams you want (the defaults here are <code>quietfeed</code> and <code>recommendations</code>), then come back and connect under settings. From then on this tab hands out the code and the invitations.</p>
+  </div>
 </section>
 
 <section id="view-source" hidden>

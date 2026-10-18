@@ -89,10 +89,11 @@ function migrateLocalSeen() {
 function render() {
   captureDrafts();
   document.querySelectorAll('.views button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  ['feed', 'talk', 'library', 'following', 'source'].forEach(v => $('#view-' + v).hidden = v !== view);
+  ['feed', 'talk', 'library', 'following', 'source', 'friends'].forEach(v => $('#view-' + v).hidden = v !== view);
   if (!data) return;
   if (view === 'feed') renderFeed();
   else if (view === 'talk') renderTalk();
+  else if (view === 'friends') renderFriends();
   else if (view === 'library') renderLibrary();
   else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
@@ -832,6 +833,61 @@ async function addOrSearch() {
 /* ------------------------------------------------------------ account sync */
 
 let syncTimer = null;
+/* ------------------------------------------------------------ friends: getting people into the group */
+
+async function renderFriends() {
+  const z = (data && data.settings && data.settings.zulip) || {};
+  const connected = !!(z.site && z.email && z.api_key_set);
+  $('#fr-state').textContent = connected ? `connecting to ${z.site}…` : 'not connected to any group yet. paste a setup code below, or create a group (bottom).';
+  $('#fr-people').innerHTML = '';
+  $('#fr-invitepanel').hidden = !connected;
+  $('#fr-link').value = z.invite || ''; $('#fr-organizer').value = z.organizer || (connected ? z.email : '');
+  $('#fr-subscribe').hidden = !connected; $('#fr-test').hidden = !connected;
+  if (z.site && !connected) { showSteps({ site: z.site, invite: z.invite, organizer: z.organizer, realm: '' }); }
+  if (!connected) return;
+  try {
+    const t = await api('/api/zulip/test', {});
+    $('#fr-state').innerHTML = `connected as <b>${esc(t.name)}</b> (${esc(t.email)}) on <b>${esc(t.realm || z.site)}</b> · streams: ${t.streams.map(s => '#' + esc(s)).join(', ')}`;
+    const people = await api('/api/zulip/people');
+    $('#fr-people').innerHTML = people.length ? `<div class="meta" style="margin-top:8px">here with you:</div><div class="people-grid">${people.map(p => `<span class="pill">${esc(p.name)}</span>`).join('')}</div>` : '<div class="meta" style="margin-top:8px">nobody else here yet — invite someone below.</div>';
+    const c = await api('/api/zulip/setup_code');
+    $('#fr-mycode').value = c.code;
+  } catch (e) { $('#fr-state').innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+}
+function showSteps(d) {
+  $('#fr-steps').hidden = false;
+  $('#fr-realm').textContent = d.realm ? `(${d.realm}, ${d.site})` : `(${d.site})`;
+  const inv = $('#fr-invite'), no = $('#fr-noinvite');
+  if (d.invite) { inv.href = d.invite; inv.hidden = false; no.hidden = true; }
+  else { inv.hidden = true; no.hidden = false; $('#fr-ask').href = d.organizer ? `mailto:${d.organizer}?subject=${encodeURIComponent('quietfeed: can I join the group?')}` : (d.site + '/accounts/go/'); }
+  $('#fr-keypage').href = (d.site.startsWith('http') ? d.site : 'https://' + d.site) + '/#settings/account-and-privacy';
+}
+async function friendsClick(b) {
+  const st = id => $(id);
+  if (b.id === 'fr-apply') {
+    const code = $('#fr-code').value.trim(); if (!code) return;
+    try { const d = await api('/api/zulip/apply_setup', { code }); toast(`pointed at ${d.realm || d.site}`); await load(); showSteps(d); $('#fr-code').value = ''; }
+    catch (e) { toast(e.message, 5000); }
+  }
+  if (b.id === 'fr-connect') {
+    st('#fr-connect-status').textContent = 'connecting…';
+    try {
+      await api('/api/settings', { zulip: { email: $('#fr-email').value, api_key: $('#fr-key').value } });
+      const t = await api('/api/zulip/test', {});
+      const s = await api('/api/zulip/subscribe', {});
+      st('#fr-connect-status').textContent = `connected as ${t.name}; subscribed to ${s.streams.map(x => '#' + x).join(', ')}`;
+      $('#fr-key').value = ''; await load(); renderFriends();
+    } catch (e) { st('#fr-connect-status').textContent = e.message; }
+  }
+  if (b.id === 'fr-test') { try { const t = await api('/api/zulip/test', {}); toast(`connected as ${t.name} on ${t.realm || t.stream}`); renderFriends(); } catch (e) { toast(e.message, 5000); } }
+  if (b.id === 'fr-subscribe') { try { const s = await api('/api/zulip/subscribe', {}); $('#fr-note').textContent = `subscribed: ${s.subscribed.join(', ') || 'nothing new'}${s.already.length ? ' · already: ' + s.already.join(', ') : ''}${s.unauthorized.length ? ' · not allowed: ' + s.unauthorized.join(', ') : ''}`; } catch (e) { $('#fr-note').textContent = e.message; } }
+  if (b.id === 'fr-mklink') { st('#fr-invite-status').textContent = 'asking Zulip for a link…'; try { const r = await api('/api/zulip/invite/link', {}); $('#fr-link').value = r.invite; st('#fr-invite-status').textContent = 'invitation link created' + (r.missing_streams.length ? ` (streams not on the Zulip yet: ${r.missing_streams.join(', ')})` : ''); const c = await api('/api/zulip/setup_code'); $('#fr-mycode').value = c.code; } catch (e) { st('#fr-invite-status').textContent = e.message; } }
+  if (b.id === 'fr-sendmail') { st('#fr-invite-status').textContent = 'sending…'; try { const r = await api('/api/zulip/invite/email', { emails: $('#fr-emails').value }); st('#fr-invite-status').textContent = `Zulip e-mailed invitations to ${r.sent.join(', ')}. send them the setup code too.`; $('#fr-emails').value = ''; } catch (e) { st('#fr-invite-status').textContent = e.message; } }
+  if (b.id === 'fr-copycode') { try { await navigator.clipboard.writeText($('#fr-mycode').value); toast('setup code copied — send it to your friend'); } catch (e) { toast('select the code and copy it'); } }
+}
+let frTimer = null;
+function queueInviteSave() { clearTimeout(frTimer); frTimer = setTimeout(async () => { try { data.settings = await api('/api/settings', { zulip: { invite: $('#fr-link').value, organizer: $('#fr-organizer').value } }); const c = await api('/api/zulip/setup_code'); $('#fr-mycode').value = c.code; } catch (e) { toast(e.message); } }, 600); }
+
 async function loadSync() {
   let s;
   try { s = await api('/api/sync'); } catch (e) { return; }
@@ -890,6 +946,7 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.v) { view = b.dataset.v; location.hash = view === 'feed' ? '' : view; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
+  if (b.id && b.id.startsWith('fr-')) { friendsClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
   if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; ytResults = null; render(); return; }
@@ -1016,6 +1073,7 @@ document.addEventListener('input', e => {
   const inp = e.target;
   if (inp.id === 'subfilter') return renderSubs();
   if (inp.id === 'feedsearch') { feedQuery = inp.value.trim(); ytResults = null; render(); return; }
+  if (inp.id === 'fr-link' || inp.id === 'fr-organizer') { queueInviteSave(); return; }
   if (inp.id === 'addq') { const k = guessKind(inp.value.trim()); if (k && $('#addkind').value !== k) { $('#addkind').value = k; $('#addhint').textContent = HINTS[k]; } return; }
   if (inp.id === 'libsearch') return renderLibrary();
   if (inp.dataset.k && inp.closest('.person')) {
@@ -1056,6 +1114,7 @@ applyTheme(theme);
 $('#addhint').textContent = HINTS.yt;
 if (location.hash === '#following') view = 'following';
 if (location.hash === '#library') view = 'library';
+if (location.hash === '#friends') view = 'friends';
 if (location.hash === '#talk') view = 'talk';
 if (location.hash === '#inbox') kindFilter = 'inbox';
 const srcHash = location.hash.match(/^#source\/(\w+)\/(.+)$/);

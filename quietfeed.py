@@ -79,7 +79,9 @@ DEFAULT_CONFIG = {
     # "extra_streams": other streams the talk tab shows and lets you read, search and post in;
     # "recs_stream": where recommendations between friends go; a message there mentioning you is a recommendation for you
     "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
-              "extra_streams": [], "recs_stream": "recommendations"},
+              "extra_streams": [], "recs_stream": "recommendations",
+              # "invite": a reusable invitation link to the group's Zulip; "organizer": whom a friend writes to for access
+              "invite": "", "organizer": ""},
     "player": ["mpv", "--ytdl-format=bestvideo[height<=1080]+bestaudio/best", "{url}"],
     "download_dir": os.path.join(HERE, "downloads"),
     "refresh_minutes": 30,
@@ -1376,6 +1378,7 @@ def settings_payload():
                       "streams": {k: zulip_stream_for(k) for k in KINDS}, "streams_set": z.get("streams") or {},
                       "all_streams": zulip_all_streams(), "extra_streams": parse_streams(z.get("extra_streams")), "shown_streams": zulip_streams(),
                       "recs_stream": zulip_recs_stream(),
+                      "invite": z.get("invite", ""), "organizer": z.get("organizer", ""),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             **CONFIG["ui"]}
@@ -1438,6 +1441,9 @@ def update_settings(patch):
                 z["extra_streams"] = [s for s in parse_streams(patch["zulip"]["extra_streams"]) if s not in zulip_all_streams()]
             if "recs_stream" in patch["zulip"]:
                 z["recs_stream"] = str(patch["zulip"]["recs_stream"]).strip().lstrip("#") or "recommendations"
+            for k in ("invite", "organizer"):
+                if k in patch["zulip"]:
+                    z[k] = str(patch["zulip"][k]).strip()
         save_config()
         return settings_payload()
 
@@ -2448,7 +2454,89 @@ def zulip_me():
 def zulip_test():
     STATE.pop("zulip_me", None)
     me = zulip_me()
-    return {"ok": True, "name": me["name"], "email": me["email"], "stream": zulip_cfg()[3], "share_streams": zulip_all_streams(), "streams": zulip_streams()}
+    return {"ok": True, "name": me["name"], "email": me["email"], "stream": zulip_cfg()[3], "share_streams": zulip_all_streams(), "streams": zulip_streams(),
+            "realm": zulip_realm_name(), "admin": bool(me.get("admin"))}
+
+def zulip_realm_name():
+    """The organization's name, from the public server settings; '' when unreachable."""
+    site = zulip_cfg()[0]
+    if not site:
+        return ""
+    try:
+        return json.loads(fetch(site + "/api/v1/server_settings", timeout=10)).get("realm_name", "")
+    except Exception:
+        return ""
+
+# ---- getting friends in: a setup code the organizer sends, invitations, and joining the group's streams
+
+def zulip_setup_code():
+    """Everything a friend's quietfeed needs to point at this group, as one pasteable code (no keys, no e-mails
+    of yours beyond the organizer contact you chose)."""
+    z = CONFIG.get("zulip") or {}
+    d = {"v": 1, "site": zulip_cfg()[0], "stream": zulip_cfg()[3], "streams": {k: zulip_stream_for(k) for k in KINDS},
+         "extra_streams": parse_streams(z.get("extra_streams")), "recs_stream": zulip_recs_stream(),
+         "invite": z.get("invite", ""), "organizer": z.get("organizer", ""), "realm": zulip_realm_name()}
+    return "qf1." + base64.urlsafe_b64encode(json.dumps(d, ensure_ascii=False).encode()).decode().rstrip("=")
+
+def zulip_apply_setup(code):
+    """A setup code → this quietfeed's Zulip settings (site, streams, invite link, organizer); the person's own
+    e-mail and API key are theirs to add."""
+    code = code.strip()
+    if not code.startswith("qf1."):
+        raise RuntimeError("that is not a quietfeed setup code (it starts with qf1.)")
+    raw = code[4:] + "=" * (-len(code[4:]) % 4)
+    try:
+        d = json.loads(base64.urlsafe_b64decode(raw.encode()).decode())
+    except Exception:
+        raise RuntimeError("the setup code is damaged; ask for it again")
+    with LOCK:
+        z = CONFIG.setdefault("zulip", {})
+        z["site"] = str(d.get("site", "")).strip()
+        z["stream"] = str(d.get("stream") or "quietfeed").strip()
+        z["streams"] = {k: str((d.get("streams") or {}).get(k, "")).strip() for k in KINDS}
+        z["extra_streams"] = parse_streams(d.get("extra_streams") or [])
+        z["recs_stream"] = str(d.get("recs_stream") or "recommendations").strip()
+        z["invite"] = str(d.get("invite", "")).strip()
+        z["organizer"] = str(d.get("organizer", "")).strip()
+        save_config()
+    return {"ok": True, "site": z["site"], "realm": d.get("realm", ""), "invite": z["invite"], "organizer": z["organizer"],
+            "streams": zulip_streams()}
+
+def zulip_stream_ids(names):
+    r = zulip_request("/streams", params={"include_subscribed": "true", "include_public": "true"})
+    by = {s.get("name"): s.get("stream_id") for s in r.get("streams", [])}
+    return [by[n] for n in names if n in by], [n for n in names if n not in by]
+
+def zulip_invite_link():
+    """A reusable invitation link that lands new members in the group's streams. Needs invitation rights on the
+    Zulip; the link is kept in settings so the setup code can carry it."""
+    ids, missing = zulip_stream_ids(zulip_streams())
+    r = zulip_request("/invites/multiuse", {"invite_expires_in_minutes": json.dumps(None), "invite_as": 400,
+                                           "stream_ids": json.dumps(ids), "include_realm_default_subscriptions": "true"})
+    link = r.get("invite_link", "")
+    if link:
+        with LOCK:
+            CONFIG.setdefault("zulip", {})["invite"] = link
+            save_config()
+    return {"ok": True, "invite": link, "missing_streams": missing}
+
+def zulip_invite_emails(emails):
+    """Have Zulip e-mail invitations to these addresses, subscribing them to the group's streams on arrival."""
+    emails = [e.strip() for e in re.split(r"[\s,;]+", emails or "") if "@" in e]
+    if not emails:
+        raise RuntimeError("no e-mail addresses given")
+    ids, missing = zulip_stream_ids(zulip_streams())
+    zulip_request("/invites", {"invitee_emails": ",".join(emails), "stream_ids": json.dumps(ids), "invite_as": 400,
+                               "invite_expires_in_minutes": json.dumps(None), "include_realm_default_subscriptions": "true"})
+    return {"ok": True, "sent": emails, "missing_streams": missing}
+
+def zulip_subscribe_all():
+    """Subscribe me to every stream the group uses (creating the ones that do not exist yet, when allowed)."""
+    names = zulip_streams()
+    r = zulip_request("/users/me/subscriptions", {"subscriptions": json.dumps([{"name": n} for n in names])})
+    return {"ok": True, "subscribed": list((r.get("subscribed") or {}).values())[0] if r.get("subscribed") else [],
+            "already": list((r.get("already_subscribed") or {}).values())[0] if r.get("already_subscribed") else [],
+            "unauthorized": r.get("unauthorized") or [], "streams": names}
 
 def item_link(it):
     k = it.get("kind")
@@ -2849,6 +2937,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "error": st.get("error"), "on": zulip_ready(), "streams": zulip_status()["streams"]})
             if p.path == "/api/zulip/people":
                 return self._send(zulip_people())
+            if p.path == "/api/zulip/setup_code":
+                return self._send({"code": zulip_setup_code(), "realm": zulip_realm_name()})
             if p.path == "/api/tw/thread":
                 return self._send(tw_thread(q.get("url", [""])[0]))
             if p.path == "/api/zulip/topic":
@@ -2950,6 +3040,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(update_settings(body))
             if p.path == "/api/zulip/test":
                 return self._send(zulip_test())
+            if p.path == "/api/zulip/apply_setup":
+                return self._send(zulip_apply_setup(str(body.get("code", ""))))
+            if p.path == "/api/zulip/invite/link":
+                return self._send(zulip_invite_link())
+            if p.path == "/api/zulip/invite/email":
+                return self._send(zulip_invite_emails(str(body.get("emails", ""))))
+            if p.path == "/api/zulip/subscribe":
+                return self._send(zulip_subscribe_all())
             if p.path == "/api/zulip/reply":
                 return self._send(zulip_reply(str(body.get("topic", "")), str(body.get("content", "")), body.get("stream") or None))
             if p.path == "/api/zulip/post":  # a new topic, from scratch, in one of the shown streams
