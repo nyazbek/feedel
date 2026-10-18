@@ -74,11 +74,12 @@ DEFAULT_CONFIG = {
     "fallback_browser": "",
     # "browser": name of a browser signed in to YouTube whose subscriptions are re-read on every refresh (needs yt-dlp)
     "sync": {"browser": ""},
-    # where the conversation lives: "share" posts an item and your note to this stream, as you, with your own API key
-    # "streams": where each kind of share goes (videos → #vids, papers → #papers…); empty means the default stream
+    # where the conversation lives: "share" posts an item and your note to `stream`, as you, with your own API key;
+    # "streams": where each kind of share goes (videos → #vids, papers → #papers…); empty means the default stream;
+    # "extra_streams": other streams the talk tab shows and lets you read, search and post in;
     # "recs_stream": where recommendations between friends go; a message there mentioning you is a recommendation for you
     "zulip": {"site": "", "email": "", "api_key": "", "stream": "quietfeed", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
-              "recs_stream": "recommendations"},
+              "extra_streams": [], "recs_stream": "recommendations"},
     "player": ["mpv", "--ytdl-format=bestvideo[height<=1080]+bestaudio/best", "{url}"],
     "download_dir": os.path.join(HERE, "downloads"),
     "refresh_minutes": 30,
@@ -1267,7 +1268,8 @@ def settings_payload():
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "quietfeed"),
                       "streams": {k: zulip_stream_for(k) for k in KINDS}, "streams_set": z.get("streams") or {},
-                      "all_streams": zulip_all_streams(), "recs_stream": zulip_recs_stream(),
+                      "all_streams": zulip_all_streams(), "extra_streams": parse_streams(z.get("extra_streams")), "shown_streams": zulip_streams(),
+                      "recs_stream": zulip_recs_stream(),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             **CONFIG["ui"]}
@@ -1284,8 +1286,7 @@ def items_payload():
                 "followed": {k: [s.get("id") for s in sub_list(k)] for k in KINDS},
                 "discussions": discussions_payload(),
                 "recs": recs_payload(),
-                "zulip": {"on": zulip_ready(), "stream": zulip_cfg()[3], "site": zulip_cfg()[0],
-                          "at": (STATE.get("zulip") or {}).get("at"), "error": (STATE.get("zulip") or {}).get("error")},
+                "zulip": zulip_status(),
                 "settings": settings_payload()}
 
 def discussions_payload():
@@ -1297,7 +1298,7 @@ def discussions_payload():
     for it in STATE["items"] + inbox_list() + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]:
         t = idx.get(item_key(it) or "") or idx.get("title:" + (it.get("title") or "")[:60].lower())
         if t and it.get("id") not in out:
-            out[it["id"]] = {k: t[k] for k in ("topic", "stream", "count", "people", "last_ts")}
+            out[it["id"]] = {k: t[k] for k in ("topic", "stream", "count", "new", "people", "last_ts")}
     return out
 
 def update_settings(patch):
@@ -1320,13 +1321,15 @@ def update_settings(patch):
             z = CONFIG.setdefault("zulip", {})
             for k in ("site", "email", "stream"):
                 if k in patch["zulip"]:
-                    z[k] = str(patch["zulip"][k]).strip()
+                    z[k] = str(patch["zulip"][k]).strip().lstrip("#") if k == "stream" else str(patch["zulip"][k]).strip()
             if patch["zulip"].get("api_key"):  # an empty field means "keep the one I already saved"
                 z["api_key"] = str(patch["zulip"]["api_key"]).strip()
             if patch["zulip"].get("clear_key"):
                 z["api_key"] = ""
             if isinstance(patch["zulip"].get("streams"), dict):
                 z["streams"] = {k: str(patch["zulip"]["streams"].get(k, "")).strip().lstrip("#") for k in KINDS}
+            if "extra_streams" in patch["zulip"]:  # the share streams are always shown, so they are not stored twice
+                z["extra_streams"] = [s for s in parse_streams(patch["zulip"]["extra_streams"]) if s not in zulip_all_streams()]
             if "recs_stream" in patch["zulip"]:
                 z["recs_stream"] = str(patch["zulip"]["recs_stream"]).strip().lstrip("#") or "recommendations"
         save_config()
@@ -2255,7 +2258,7 @@ def zulip_cfg():
     site = (z.get("site") or "").strip().rstrip("/")
     if site and not site.startswith("http"):
         site = "https://" + site
-    return site, (z.get("email") or "").strip(), (z.get("api_key") or "").strip(), (z.get("stream") or "quietfeed").strip() or "quietfeed"
+    return site, (z.get("email") or "").strip(), (z.get("api_key") or "").strip(), (z.get("stream") or "quietfeed").strip().lstrip("#") or "quietfeed"
 
 def zulip_ready():
     site, email, key, _ = zulip_cfg()
@@ -2270,43 +2273,43 @@ def zulip_recs_stream():
     return ((CONFIG.get("zulip") or {}).get("recs_stream") or "").strip() or "recommendations"
 
 def zulip_all_streams():
-    """Every stream quietfeed reads: the default, each per-kind one and the recommendations stream, without repeats."""
+    """Every stream shares can go to, plus the recommendations stream: the default, each per-kind one, without repeats."""
     out = [zulip_cfg()[3]]
     for s in [zulip_stream_for(k) for k in KINDS] + [zulip_recs_stream()]:
         if s not in out:
             out.append(s)
     return out
 
-def zulip_me():
-    """Who I am on Zulip (user_id, full_name, email), cached for the run; needed to know which mentions are mine."""
-    me = STATE.get("zulip_me")
-    if me and me.get("at", 0) > time.time() - 3600:
-        return me
-    r = zulip_request("/users/me")
-    me = {"user_id": r.get("user_id"), "full_name": r.get("full_name", ""), "email": r.get("email", ""), "at": time.time()}
-    STATE["zulip_me"] = me
-    return me
+def parse_streams(v):
+    """A streams setting as typed ('quietfeed, papers' or one per line) or as a list → clean names, no '#', no repeats."""
+    if isinstance(v, str):
+        v = re.split(r"[,\n]", v)
+    out = []
+    for s in v or []:
+        s = str(s).strip().lstrip("#").strip()
+        if s and s not in out:
+            out.append(s)
+    return out
 
-def zulip_people():
-    """The humans on the Zulip, minus me and bots: who a recommendation can be addressed to."""
-    me = zulip_me()
-    r = zulip_request("/users")
-    out = [{"user_id": u.get("user_id"), "name": u.get("full_name", ""), "email": u.get("email", "")}
-           for u in r.get("members", []) if u.get("is_active", True) and not u.get("is_bot") and u.get("user_id") != me.get("user_id")]
-    return sorted(out, key=lambda u: u["name"].lower())
+def zulip_streams():
+    """Every stream quietfeed reads and the talk tab shows: the share streams (default first, then per kind),
+    then the extra streams listed in settings."""
+    out = zulip_all_streams()
+    for s in parse_streams((CONFIG.get("zulip") or {}).get("extra_streams")):
+        if s not in out:
+            out.append(s)
+    return out
 
-def zulip_react(msg_id, emoji="+1"):
-    return zulip_request(f"/messages/{int(msg_id)}/reactions", {"emoji_name": emoji})
-
-def zulip_request(path, data=None, params=None):
-    """One call to the Zulip REST API, authenticated as you (e-mail + personal API key). `data` posts, `params` gets."""
+def zulip_request(path, data=None, params=None, method=None):
+    """One call to the Zulip REST API, authenticated as you (e-mail + personal API key). `data` posts (or PATCHes /
+    DELETEs with `method`), `params` gets. Errors come back as Zulip phrased them."""
     site, email, key, _ = zulip_cfg()
     if not (site and email and key):
         raise RuntimeError("Zulip is not set up yet: add your site, e-mail and API key under settings")
     auth = base64.b64encode(f"{email}:{key}".encode()).decode()
     try:
         r = fetch(site + "/api/v1" + path + ("?" + urlencode(params) if params else ""), timeout=25,
-                  data=urlencode(data).encode() if data else None,
+                  data=urlencode(data).encode() if data else None, method=method,
                   headers={"Authorization": "Basic " + auth, "Content-Type": "application/x-www-form-urlencoded"})
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", "ignore")
@@ -2317,9 +2320,29 @@ def zulip_request(path, data=None, params=None):
         raise RuntimeError(f"Zulip said {e.code}: {msg[:200]}")
     return json.loads(r)
 
+def zulip_people():
+    """The humans on the Zulip, minus me and bots: who a recommendation can be addressed to."""
+    me = zulip_me()
+    r = zulip_request("/users")
+    out = [{"user_id": u.get("user_id"), "name": u.get("full_name", ""), "email": u.get("email", "")}
+           for u in r.get("members", []) if u.get("is_active", True) and not u.get("is_bot") and u.get("user_id") != me.get("user_id")]
+    return sorted(out, key=lambda u: u["name"].lower())
+
+
+def zulip_me():
+    """Who you are on Zulip (id, name), asked once per run; needed to tell your own messages and reactions apart."""
+    me = STATE.get("zulip_me")
+    if me and me.get("for") == zulip_cfg()[:2]:
+        return me
+    r = zulip_request("/users/me")
+    me = {"user_id": r.get("user_id"), "name": r.get("full_name", ""), "email": (r.get("email") or "").lower(), "for": zulip_cfg()[:2]}
+    STATE["zulip_me"] = me
+    return me
+
 def zulip_test():
-    me = zulip_request("/users/me")
-    return {"ok": True, "name": me.get("full_name", ""), "email": me.get("email", ""), "stream": zulip_cfg()[3]}
+    STATE.pop("zulip_me", None)
+    me = zulip_me()
+    return {"ok": True, "name": me["name"], "email": me["email"], "stream": zulip_cfg()[3], "share_streams": zulip_all_streams(), "streams": zulip_streams()}
 
 def item_link(it):
     k = it.get("kind")
@@ -2348,54 +2371,95 @@ def item_key(it):
         return "arxiv:" + str(it.get("id"))
     return canon_key(item_link(it))
 
-def zulip_fetch_stream():
-    """The configured stream's recent messages, rendered by Zulip (so LaTeX arrives as KaTeX markup), kept in STATE."""
+def zulip_clean(content, site):
+    """Zulip's rendered HTML, made safe for the page: no scripts, absolute links back to the site, images as links."""
+    content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content or "", flags=re.S | re.I)
+    content = re.sub(r'(href|src)="/', r'\1="' + site + "/", content)
+    content = re.sub(r'<img[^>]+src="([^"]+)"[^>]*>', r'<a href="\1" target="_blank" rel="noopener">[image]</a>', content)
+    return content
+
+def zulip_message(m, site, me, stream=None):
+    """One Zulip message as the page sees it: who, when, rendered content, the item links in it, whether you have
+    read it, the reactions on it (yours marked), and whether it is yours (so it can be edited)."""
+    content = zulip_clean(m.get("content", ""), site)
+    links = [html.unescape(h) for h in re.findall(r'href="([^"]+)"', content)]
+    reactions = {}
+    for r in m.get("reactions") or []:
+        key = (r.get("reaction_type") or "unicode_emoji", r.get("emoji_code") or r.get("emoji_name"))
+        uid = r.get("user_id") if r.get("user_id") is not None else (r.get("user") or {}).get("id")
+        uemail = ((r.get("user") or {}).get("email") or "").lower()
+        rec = reactions.setdefault(key, {"name": r.get("emoji_name", ""), "code": r.get("emoji_code", ""), "type": key[0], "count": 0, "mine": False})
+        rec["count"] += 1
+        if (uid is not None and uid == me.get("user_id")) or (uemail and uemail == me.get("email")):
+            rec["mine"] = True
+    sender = (m.get("sender_email") or "").lower()
+    return {"id": m.get("id"), "who": m.get("sender_full_name", ""), "email": sender, "ts": m.get("timestamp"),
+            "topic": m.get("subject", ""), "stream": stream or m.get("display_recipient") or "", "content": content,
+            "keys": sorted({k for k in (canon_key(l) for l in links) if k}), "text": strip_html(content, 200),
+            "links": [l for l in links if canon_key(l)],
+            "mentions": re.findall(r'<span class="user-mention[^"]*"[^>]*data-user-id="([^"]+)"', content),
+            "read": "read" in (m.get("flags") or []), "mine": bool(sender) and sender == me.get("email") or m.get("sender_id") == me.get("user_id"),
+            "edited": bool(m.get("last_edit_timestamp")), "reactions": sorted(reactions.values(), key=lambda r: -r["count"])}
+
+def zulip_fetch_stream(stream=None):
+    """A stream's recent messages (rendered by Zulip, so LaTeX arrives as KaTeX markup), kept in STATE["zulip"]["streams"]
+    keyed by stream. Without an argument every listed stream is fetched. Returns the state of the stream(s) fetched."""
     if not zulip_ready():
         STATE["zulip"] = None
         return None
-    site, _, _, stream = zulip_cfg()
-    try:
-        msgs = []
-        for st in zulip_all_streams():
-            r = zulip_request("/messages", params={"anchor": "newest", "num_before": 400, "num_after": 0, "apply_markdown": "true",
-                                                  "narrow": json.dumps([{"operator": "stream", "operand": st}])})
-            for m in r.get("messages", []):
-                content = m.get("content", "")
-                content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content, flags=re.S | re.I)
-                content = re.sub(r'(href|src)="/', r'\1="' + site + "/", content)
-                content = re.sub(r'<img[^>]+src="([^"]+)"[^>]*>', r'<a href="\1" target="_blank" rel="noopener">[image]</a>', content)
-                links = [html.unescape(h) for h in re.findall(r'href="([^"]+)"', content)]
-                mentions = re.findall(r'<span class="user-mention[^"]*"[^>]*data-user-id="([^"]+)"', content)
-                msgs.append({"id": m.get("id"), "who": m.get("sender_full_name", ""), "email": m.get("sender_email", ""),
-                             "sender_id": m.get("sender_id"), "ts": m.get("timestamp"), "topic": m.get("subject", ""),
-                             "stream": m.get("display_recipient") or st, "content": content,
-                             "keys": sorted({k for k in (canon_key(l) for l in links) if k}),
-                             "links": [l for l in links if canon_key(l)], "mentions": mentions,
-                             "reactions": [{"emoji": r.get("emoji_name"), "user_id": r.get("user_id")} for r in m.get("reactions", [])],
-                             "text": strip_html(content, 200)})
-        with LOCK:
-            STATE["zulip"] = {"at": time.time(), "messages": msgs, "stream": stream, "site": site, "error": None}
+    streams = [stream] if stream else zulip_streams()
+    site = zulip_cfg()[0]
+    with LOCK:
+        z = STATE.get("zulip") or {"streams": {}}
+        z["site"] = site
+        for s in list(z["streams"]):  # a stream taken out of the settings leaves the state too
+            if s not in zulip_streams():
+                del z["streams"][s]
+        STATE["zulip"] = z
+    for s in streams:
         try:
-            zulip_me()
-        except Exception:
-            pass
-        threading.Thread(target=resolve_rec_items, daemon=True).start()
-        return STATE["zulip"]
-    except Exception as ex:
-        with LOCK:
-            prev = STATE.get("zulip") or {}
-            STATE["zulip"] = {**prev, "error": str(ex), "at": prev.get("at") or time.time(), "messages": prev.get("messages", [])}
-        log("  zulip:", ex)
-        return STATE["zulip"]
+            me = zulip_me()
+            r = zulip_request("/messages", params={"anchor": "newest", "num_before": 400, "num_after": 0, "apply_markdown": "true",
+                                                  "narrow": json.dumps([{"operator": "stream", "operand": s}])})
+            msgs = [zulip_message(m, site, me, s) for m in r.get("messages", [])]
+            with LOCK:
+                STATE["zulip"]["streams"][s] = {"at": time.time(), "messages": msgs, "error": None}
+        except Exception as ex:
+            with LOCK:
+                prev = STATE["zulip"]["streams"].get(s) or {}
+                STATE["zulip"]["streams"][s] = {**prev, "error": str(ex), "at": prev.get("at") or time.time(), "messages": prev.get("messages", [])}
+            log(f"  zulip #{s}:", ex)
+    threading.Thread(target=resolve_rec_items, daemon=True).start()
+    return STATE["zulip"]["streams"].get(stream) if stream else STATE["zulip"]
 
-def zulip_topics():
-    """One summary per topic, newest activity first, with the keys of the items it is about."""
+def zulip_state(stream):
+    return ((STATE.get("zulip") or {}).get("streams") or {}).get(stream) or {}
+
+def zulip_messages(stream=None):
+    """The cached messages of one stream, or of every stream when none is given."""
+    z = (STATE.get("zulip") or {}).get("streams") or {}
+    if stream is not None:
+        return list((z.get(stream) or {}).get("messages", []))
+    return [m for s in zulip_streams() for m in (z.get(s) or {}).get("messages", [])]
+
+def zulip_status():
+    """For the page: is Zulip on, which streams, when each was read and whether that failed."""
     z = STATE.get("zulip") or {}
+    streams = [{"name": s, "share": s == zulip_cfg()[3], "at": zulip_state(s).get("at"), "error": zulip_state(s).get("error")} for s in zulip_streams()]
+    err = next((s["error"] for s in streams if s["error"]), None)
+    return {"on": zulip_ready(), "stream": zulip_cfg()[3], "site": zulip_cfg()[0], "streams": streams,
+            "at": max([s["at"] for s in streams if s["at"]] or [None]) if any(s["at"] for s in streams) else None, "error": err}
+
+def zulip_topics(stream=None):
+    """One summary per topic, newest activity first, with the keys of the items it is about and how many of its
+    messages you have not read (shown as muted text on the row, never as a badge)."""
     topics = {}
-    for m in z.get("messages", []):
-        st = m.get("stream") or z.get("stream", "")
-        t = topics.setdefault((st, m["topic"]), {"topic": m["topic"], "stream": st, "count": 0, "first_ts": m["ts"], "last_ts": m["ts"], "people": [], "keys": [], "last": ""})
+    for m in zulip_messages(stream):
+        t = topics.setdefault((m["stream"], m["topic"]), {"topic": m["topic"], "stream": m["stream"], "count": 0, "new": 0, "first_ts": m["ts"],
+                                                           "last_ts": m["ts"], "people": [], "keys": [], "last": "", "last_who": ""})
         t["count"] += 1
+        if not m["read"]:
+            t["new"] += 1
         t["first_ts"] = min(t["first_ts"], m["ts"])
         if m["ts"] >= t["last_ts"]:
             t["last_ts"], t["last"], t["last_who"] = m["ts"], m["text"], m["who"]
@@ -2407,7 +2471,7 @@ def zulip_topics():
     return sorted(topics.values(), key=lambda t: -t["last_ts"])
 
 def discussions_index():
-    """item key → the topic discussing it (the first one that linked it, plus a title match as a fallback)."""
+    """item key → the topic discussing it (the first one that linked it, in any shown stream, plus a title match as a fallback)."""
     out = {}
     for t in zulip_topics():
         for k in t["keys"]:
@@ -2415,30 +2479,115 @@ def discussions_index():
         out.setdefault("title:" + t["topic"].lower(), t)
     return out
 
-def zulip_topic_messages(topic, stream=""):
-    z = STATE.get("zulip") or {}
-    return sorted([m for m in z.get("messages", []) if m["topic"] == topic and (not stream or (m.get("stream") or z.get("stream")) == stream)],
-                  key=lambda m: m["ts"])
+def zulip_topic_messages(topic, stream=None):
+    """The messages of one topic, oldest first. Without a stream, the first shown stream that has the topic."""
+    if not stream:
+        stream = next((s for s in zulip_streams() if any(m["topic"] == topic for m in zulip_messages(s))), zulip_cfg()[3])
+    return sorted([m for m in zulip_messages(stream) if m["topic"] == topic], key=lambda m: m["ts"])
 
-def zulip_reply(topic, content, stream=""):
+def zulip_search(stream, query):
+    """Ask Zulip's own search within one stream; matching messages grouped by topic, newest topic first, with
+    Zulip's match highlighting kept (its `highlight` spans)."""
+    query = (query or "").strip()
+    if not query:
+        return {"topics": [], "query": query, "stream": stream}
+    site = zulip_cfg()[0]
+    me = zulip_me()
+    r = zulip_request("/messages", params={"anchor": "newest", "num_before": 200, "num_after": 0, "apply_markdown": "true",
+                                          "narrow": json.dumps([{"operator": "stream", "operand": stream}, {"operator": "search", "operand": query}])})
+    topics = {}
+    for raw in r.get("messages", []):
+        m = zulip_message({**raw, "content": raw.get("match_content") or raw.get("content", "")}, site, me, stream)
+        m["topic_html"] = zulip_clean(raw.get("match_subject") or html.escape(raw.get("subject", "")), site)
+        t = topics.setdefault(m["topic"], {"topic": m["topic"], "stream": stream, "topic_html": m["topic_html"], "last_ts": m["ts"], "messages": []})
+        t["last_ts"] = max(t["last_ts"], m["ts"])
+        t["messages"].append(m)
+    for t in topics.values():
+        t["messages"].sort(key=lambda m: m["ts"])
+    return {"topics": sorted(topics.values(), key=lambda t: -t["last_ts"]), "query": query, "stream": stream}
+
+def zulip_post(stream, topic, content):
+    """Post to a topic in a stream, as you, then re-read that stream so the page sees the message rendered."""
     if not content.strip():
         raise RuntimeError("nothing to post")
-    stream = (stream or "").strip() or zulip_cfg()[3]
-    r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic[:60], "content": content.strip()})
-    zulip_fetch_stream()  # synchronous, so the page can show the thread with the new message right away
-    return {"ok": True, "id": r.get("id")}
+    topic = (topic or "").strip()[:60]
+    if not topic:
+        raise RuntimeError("a topic is needed")
+    stream = (stream or "").strip().lstrip("#") or zulip_cfg()[3]
+    r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic, "content": content.strip()})
+    zulip_fetch_stream(stream)  # synchronous, so the page can show the thread with the new message right away
+    return {"ok": True, "id": r.get("id"), "stream": stream, "topic": topic}
+
+def zulip_reply(topic, content, stream=None):
+    return zulip_post(stream, topic, content)
+
+def zulip_mark_read(ids):
+    """Tell Zulip you have read these messages (its own read flag, the one its apps use), and remember it locally."""
+    ids = [int(i) for i in ids if str(i).strip().lstrip("-").isdigit()]
+    if not ids:
+        return {"ok": True, "n": 0}
+    zulip_request("/messages/flags", {"messages": json.dumps(ids), "op": "add", "flag": "read"})
+    with LOCK:
+        for m in zulip_messages():
+            if m["id"] in ids:
+                m["read"] = True
+    return {"ok": True, "n": len(ids)}
+
+def zulip_react(mid, emoji_name, on=True, emoji_code="", reaction_type=""):
+    """Add or take back one reaction of yours on a message; the local copy is patched so the page can redraw at once."""
+    mid = int(mid)
+    emoji_name = (emoji_name or "").strip().strip(":")
+    if not emoji_name:
+        raise RuntimeError("which emoji?")
+    data = {"emoji_name": emoji_name}
+    if emoji_code:
+        data["emoji_code"] = emoji_code
+    if reaction_type:
+        data["reaction_type"] = reaction_type
+    zulip_request(f"/messages/{mid}/reactions", data, method="POST" if on else "DELETE")
+    me = zulip_me()
+    with LOCK:
+        for m in zulip_messages():
+            if m["id"] != mid:
+                continue
+            rec = next((r for r in m["reactions"] if r["name"] == emoji_name), None)
+            if on and not rec:
+                m["reactions"].append({"name": emoji_name, "code": emoji_code, "type": reaction_type or "unicode_emoji", "count": 1, "mine": True})
+            elif on and not rec["mine"]:
+                rec["count"] += 1
+                rec["mine"] = True
+            elif not on and rec and rec["mine"]:
+                rec["count"] -= 1
+                rec["mine"] = False
+                if rec["count"] <= 0:
+                    m["reactions"].remove(rec)
+            return {"ok": True, "message": m}
+    return {"ok": True, "me": me["name"]}
+
+def zulip_raw(mid):
+    """The markdown source of one message, for editing."""
+    r = zulip_request(f"/messages/{int(mid)}", params={"apply_markdown": "false"})
+    return {"id": int(mid), "content": (r.get("message") or {}).get("content") or r.get("raw_content") or ""}
+
+def zulip_edit(mid, content, stream=None):
+    """Change the text of one of your messages, then re-read its stream so the rendered version comes back from Zulip."""
+    if not content.strip():
+        raise RuntimeError("nothing to save")
+    mid = int(mid)
+    zulip_request(f"/messages/{mid}", {"content": content.strip()}, method="PATCH")
+    stream = stream or next((m["stream"] for m in zulip_messages() if m["id"] == mid), None)
+    if stream:
+        zulip_fetch_stream(stream)
+    return {"ok": True, "id": mid}
 
 def recommendations():
     """What friends recommended to me: messages in the recommendations stream that mention nobody (for everyone)
     or mention me, grouped by the thing they link to. My own recommendations are not for me."""
-    z = STATE.get("zulip") or {}
     me = STATE.get("zulip_me") or {}
     recs_stream = zulip_recs_stream()
     out = {}
-    for m in z.get("messages", []):
-        if (m.get("stream") or z.get("stream")) != recs_stream or not m.get("keys"):
-            continue
-        if me.get("user_id") is not None and m.get("sender_id") == me.get("user_id"):
+    for m in zulip_messages(recs_stream):
+        if not m.get("keys") or m.get("mine"):
             continue
         mentions = m.get("mentions") or []
         if mentions and "*" not in mentions and str(me.get("user_id")) not in mentions:
@@ -2446,7 +2595,7 @@ def recommendations():
         key, link = m["keys"][0], m["links"][0] if m.get("links") else ""
         qm = re.search(r"<blockquote>(.*?)</blockquote>", m["content"], re.S)
         note = strip_html(qm.group(1), 600) if qm else ""
-        thanked = any(r.get("user_id") == me.get("user_id") for r in m.get("reactions", []))
+        thanked = any(r.get("mine") and r.get("name") in ("+1", "thumbs_up") for r in m.get("reactions", []))
         rec = out.setdefault(key, {"key": key, "link": link, "topic": m["topic"], "stream": recs_stream, "by": [], "last_ts": m["ts"],
                                    "for_all": not mentions})
         rec["by"].append({"who": m["who"], "note": note, "ts": m["ts"], "msg_id": m["id"], "thanked": thanked})
@@ -2513,7 +2662,7 @@ def zulip_share(item, note="", topic="", stream="", recommend=False, to=()):
     if recommend:
         me = zulip_me()
         who = ", ".join(f"@**{n}**" for n in to if n) or "everyone"
-        lines.insert(0, f"**{me.get('full_name') or 'someone'}** recommends this to {who}")  # bold only the name: @**x** is a mention
+        lines.insert(0, f"**{me.get('full_name') or me.get('name') or 'someone'}** recommends this to {who}")  # bold only the name: @**x** is a mention
         if note.strip():
             lines += ["", "> " + note.strip().replace("\n", "\n> ")]
         stream = zulip_recs_stream()
@@ -2522,8 +2671,21 @@ def zulip_share(item, note="", topic="", stream="", recommend=False, to=()):
     topic = (topic.strip() or title or label)[:60]
     stream = (stream or "").strip() or zulip_stream_for(k)
     r = zulip_request("/messages", {"type": "stream", "to": stream, "topic": topic, "content": "\n".join(lines)})
-    threading.Thread(target=zulip_fetch_stream, daemon=True).start()
+    threading.Thread(target=zulip_fetch_stream, args=(stream,), daemon=True).start()
     return {"ok": True, "id": r.get("id"), "stream": stream, "topic": topic}
+
+def topics_with_items(topics):
+    """Attach to each topic the item it is about, when quietfeed has it (feed, inbox or library)."""
+    by_key = {}
+    with LOCK:
+        pool = STATE["items"] + inbox_list() + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]
+    for it in pool:
+        k = item_key(it)
+        if k and k not in by_key:
+            by_key[k] = it
+    for t in topics:
+        t["item"] = next((by_key[k] for k in t["keys"] if k in by_key), None)
+    return topics
 
 # ---------------------------------------------------------------- web
 
@@ -2572,21 +2734,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(sync_payload())
             if p.path == "/api/inbox":
                 return self._send(inbox_list())
+            if p.path == "/api/zulip/streams":
+                return self._send(zulip_status())
             if p.path == "/api/zulip/topics":
-                topics = zulip_topics()
-                by_key = {}
-                for it in STATE["items"] + inbox_list():
-                    k = item_key(it)
-                    if k and k not in by_key:
-                        by_key[k] = it
-                for t in topics:
-                    t["item"] = next((by_key[k] for k in t["keys"] if k in by_key), None)
-                z = STATE.get("zulip") or {}
-                return self._send({"topics": topics[:100], "at": z.get("at"), "error": z.get("error"), "on": zulip_ready()})
+                stream = q.get("stream", [""])[0] or None
+                st = zulip_state(stream) if stream else {}
+                return self._send({"topics": topics_with_items(zulip_topics(stream))[:200], "stream": stream, "at": st.get("at"),
+                                   "error": st.get("error"), "on": zulip_ready(), "streams": zulip_status()["streams"]})
             if p.path == "/api/zulip/people":
                 return self._send(zulip_people())
             if p.path == "/api/zulip/topic":
-                return self._send(zulip_topic_messages(q.get("name", [""])[0], q.get("stream", [""])[0]))
+                return self._send(zulip_topic_messages(q.get("name", [""])[0], q.get("stream", [""])[0] or None))
+            if p.path == "/api/zulip/search":
+                return self._send(zulip_search(q.get("stream", [""])[0] or zulip_cfg()[3], q.get("q", [""])[0]))
+            if p.path == "/api/zulip/raw":
+                return self._send(zulip_raw(q.get("id", ["0"])[0]))
             if p.path == "/api/source":
                 return self._send(source_payload(q.get("kind", [""])[0], q.get("id", [""])[0]))
             if p.path == "/open":  # the link handler and bookmarks land here: take the link, show the inbox
@@ -2681,9 +2843,18 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/zulip/test":
                 return self._send(zulip_test())
             if p.path == "/api/zulip/reply":
-                return self._send(zulip_reply(str(body.get("topic", "")), str(body.get("content", "")), str(body.get("stream", ""))))
+                return self._send(zulip_reply(str(body.get("topic", "")), str(body.get("content", "")), body.get("stream") or None))
+            if p.path == "/api/zulip/post":  # a new topic, from scratch, in one of the shown streams
+                return self._send(zulip_post(str(body.get("stream", "")), str(body.get("topic", "")), str(body.get("content", ""))))
+            if p.path == "/api/zulip/read":
+                return self._send(zulip_mark_read(body.get("ids") or []))
+            if p.path == "/api/zulip/react":
+                return self._send(zulip_react(body.get("id"), str(body.get("emoji", "")), bool(body.get("on", True)),
+                                              str(body.get("code", "")), str(body.get("type", ""))))
+            if p.path == "/api/zulip/edit":
+                return self._send(zulip_edit(body.get("id"), str(body.get("content", "")), body.get("stream") or None))
             if p.path == "/api/zulip/refresh":
-                return self._send({"ok": zulip_fetch_stream() is not None})
+                return self._send({"ok": zulip_fetch_stream(body.get("stream") or None) is not None})
             if p.path == "/api/inbox":
                 u = str(body.get("url", "")).strip()
                 if not link_kind(u):

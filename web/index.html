@@ -17,6 +17,7 @@
   <h1>quietfeed</h1>
   <nav class="views">
     <button data-v="feed" class="on"><span class="ic">☰</span>your feed</button>
+    <button data-v="talk"><span class="ic">◌</span>talk</button>
     <button data-v="library"><span class="ic">◇</span>library</button>
     <button data-v="following"><span class="ic">◎</span>following</button>
   </nav>
@@ -42,10 +43,10 @@
     <input id="s_fallback_browser" placeholder="auto"> <span class="meta" id="s_fallback_auto"></span></label>
   <label class="block">hide anything whose title contains (one per line; wrap in / / for a regex)
     <textarea id="s_block_words" rows="3" placeholder="giveaway&#10;reacts to&#10;/\b(top|best) \d+\b/"></textarea></label>
-  <h2 class="sub">Zulip <span class="meta">— where the conversation lives. “share” posts an item and your note there, as you.</span></h2>
+  <h2 class="sub">Zulip <span class="meta">— where the conversation lives. “share” posts an item and your note there, as you; the <b>talk</b> tab reads it back.</span></h2>
   <div class="grid2">
     <label>site <input id="z_site" placeholder="yourgroup.zulipchat.com"></label>
-    <label>stream <input id="z_stream" placeholder="quietfeed"></label>
+    <label>share to stream <input id="z_stream" placeholder="quietfeed"></label>
     <label>your e-mail <input id="z_email" placeholder="you@example.com"></label>
     <label>API key <input id="z_key" type="password" placeholder="Zulip → settings → account → API key" autocomplete="off"></label>
   </div>
@@ -56,6 +57,8 @@
     <label>tweets go to # <input id="z_s_tw" placeholder="(default stream)"></label>
     <label>recommendations go to # <input id="z_recs" placeholder="recommendations"></label>
   </div>
+  <label class="block">other streams to show in <b>talk</b> (comma-separated; the share streams above are always there)
+    <input id="z_extra" placeholder="general, reading-group"></label>
   <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
   <div class="row"><button id="s_save" class="solid">save</button><span class="meta">per-source overrides live in the following tab</span>
     <span class="grow"></span><button id="quit" class="link">quit quietfeed</button></div>
@@ -89,6 +92,27 @@
   </div>
   <div id="errs"></div>
   <div id="list"></div>
+</section>
+
+<section id="view-talk" hidden>
+  <div class="bar">
+    <div class="chips" id="streams"></div>
+    <span class="grow"></span>
+    <span class="meta" id="talkwhen"></span>
+    <button id="nt_open" class="link">+ topic</button>
+    <button id="talkrf" class="link">refresh</button>
+  </div>
+  <form id="newtopic" class="toolbar" hidden>
+    <input id="nt_topic" placeholder="topic" autocomplete="off" maxlength="60">
+    <textarea id="nt_body" rows="3" placeholder="what is on your mind — markdown and $LaTeX$ work"></textarea>
+    <div class="row"><button class="solid" id="nt_send">post</button><button type="button" class="link" id="nt_cancel">cancel</button><span class="meta" id="nt_status"></span></div>
+  </form>
+  <form id="talksearch" class="row toolbar">
+    <input id="talkq" placeholder="search this stream" autocomplete="off">
+    <button class="link" type="submit">search</button><button type="button" id="talkq_clear" class="link" hidden>back to topics</button>
+  </form>
+  <div id="talkerrs"></div>
+  <div id="talklist"></div>
 </section>
 
 <section id="view-source" hidden>

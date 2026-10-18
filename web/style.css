@@ -52,6 +52,27 @@ main{max-width:780px;width:100%;margin:0 auto;padding:40px 48px 96px}
   main{padding:20px 16px 80px}
 }
 
+/* ---- talk tab */
+.topic .hit{font-size:14px;margin-top:6px;padding-left:10px;border-left:2px solid var(--line)}
+.topic .hit .who{font-size:12.5px;color:var(--mut)}
+.topic .hit .who b{color:var(--fg);font-weight:600}
+.new{color:var(--mut)}
+.highlight{background:var(--accbg);border-radius:2px;padding:0 1px}
+.thread .who .mine,.thread .who .edited{color:var(--faint)}
+.thread .who button{color:var(--acc);margin-left:8px;font-size:12.5px}
+.reacts{display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:4px;font-size:12.5px;color:var(--mut)}
+.reacts button{font-size:12.5px;color:var(--mut);padding:0 7px;border:1px solid var(--line);border-radius:10px;line-height:1.7;background:var(--bg)}
+.reacts button:hover{color:var(--fg);border-color:var(--mut)}
+.reacts button.mine{color:var(--acc);border-color:var(--acc);background:var(--accbg)}
+.reacts button.add{border-color:transparent;color:var(--faint);background:none}
+.reacts button.add:hover{color:var(--fg)}
+.reacts .pick button{border-color:transparent;font-size:15px;padding:0 3px;background:none}
+.thread .edit textarea{margin-top:4px}
+#newtopic{display:flex;flex-direction:column;gap:6px}
+#newtopic input{font-size:14px}
+#newtopic .row{margin:0}
+#talksearch{margin-bottom:6px}
+
 /* ---- headings and bars */
 h2{font-size:15px;margin:0 0 8px;font-weight:600}
 h2.sub{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}

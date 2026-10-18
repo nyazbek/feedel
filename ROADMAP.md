@@ -25,7 +25,7 @@ This document is the plan. Argue with it in issues; change it in pull requests.
 - Import: Google Takeout, OPML, the X archive, pasted lists with channel names resolved by search; YouTube account sync through the official API or a signed-in browser's cookies; remembered unfollows.
 - Inbox: links from WhatsApp or anywhere, by paste, by an opt-in clipboard watcher, or by making quietfeed the system link handler on Windows (other links go to your normal browser).
 - Source pages, a tagged library with notes, search over what you follow with an explicit YouTube search behind it, calm titles, block words, per-source minimum length and cap.
-- Zulip: share per kind, recommend to friends, discussion lines with inline threads and replies, a talk view of topics. The full **talk tab** (streams, new topics, search, read state, reactions, editing) is pull request #9.
+- Zulip: share per kind, recommend to friends, discussion lines with inline threads and replies, a talk view of topics. The **talk** tab: the group's streams read and discussed from inside quietfeed, new topics, search, quiet read state, reactions, editing your own messages.
 - One SQLite file, a single-file executable for Windows and macOS built on every tag.
 
 ## Milestones
@@ -33,10 +33,12 @@ This document is the plan. Argue with it in issues; change it in pull requests.
 ### 1. Collaboration — done
 ### 2. One SQLite file — done
 ### 3. Share to Zulip — done
-### 4. Read Zulip back: discussions, recommendations, talk — done (talk tab in PR #9)
+### 4. Read Zulip back: discussions, recommendations, the talk tab — done
 
 ### 5. Identity through Zulip
 Every member already has a Zulip account, so quietfeed does not need its own user system. Logging into a hosted quietfeed is "paste your Zulip API key": Zulip is the identity, quietfeed keeps per-person follows, settings, marks and inbox keyed by that account. Sources are shared and fetched once. With no accounts configured the app behaves exactly as today. This replaces the earlier invite-links plan.
+
+Since milestone 4, everyone in the group already has a Zulip account and a personal API key that quietfeed holds. Identity can therefore be "sign in with your Zulip API key": the server asks Zulip who the key belongs to (`/users/me`) and that is the user, with no separate password system, no invite tokens and no second place where accounts live. Whoever is in the Zulip organisation is in; whoever leaves it is out. The PBKDF2 route stays as the fallback for a group without Zulip.
 
 ### 6. Hosting
 `--host`, `--data-dir`, a launchd plist and a systemd unit under `deploy/`, and two documented ways to keep it private: Tailscale (only your own devices can see it) or Cloudflare Tunnel with Access (a login wall on your own domain). Remote playback: a `quietfeed://play/<id>` URL handler registered by the binary in client mode that opens mpv locally; fallback copy link.
