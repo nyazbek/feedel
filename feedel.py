@@ -997,7 +997,7 @@ def _tw_context(t):
     u = t.get("user") or {}
     user = (u.get("screen_name") or "").lower()
     media = [m for m in t.get("mediaDetails", []) if m.get("type")] or t.get("photos") or []
-    return {"id": t["id_str"], "user": user, "name": u.get("name", ""), "text": t.get("text", ""),
+    return {"id": t["id_str"], "user": user, "name": u.get("name", ""), "text": html.unescape(t.get("text", "")),
             "link": f"https://x.com/{user or 'i'}/status/{t['id_str']}", "ts": iso_ts(t.get("created_at")), "media": bool(media)}
 
 def tw_syndication(tid):
@@ -1013,7 +1013,7 @@ def tw_syndication(tid):
         return None
     if not isinstance(d, dict) or not d.get("id_str"):
         return None
-    out = {"video": False, "text": d.get("text", ""), "name": d.get("user", {}).get("name", ""),
+    out = {"video": False, "text": html.unescape(d.get("text", "")), "name": d.get("user", {}).get("name", ""),
            "user": (d.get("user", {}).get("screen_name") or "").lower(), "ts": iso_ts(d.get("created_at")),
            "photos": [p.get("url") for p in d.get("photos", []) if p.get("url")][:4],
            "reply_to": d.get("in_reply_to_status_id_str") or ((d.get("parent") or {}).get("id_str")) or "",
@@ -1114,7 +1114,7 @@ def tw_thread(url):
     def from_syndication(pid, who=""):
         d = tw_syndication(pid) or {}
         return {"id": pid, "link": f"https://x.com/{d.get('user') or who or 'i'}/status/{pid}", "user": (d.get("user") or who).lower(),
-                "name": d.get("name", ""), "text": d.get("text", ""), "ts": d.get("ts") or time.time(),
+                "name": d.get("name", ""), "text": html.unescape(d.get("text", "")), "ts": d.get("ts") or time.time(),
                 "media": bool(d.get("video") or d.get("photos"))}
 
     def extend_from_cache(posts, me):
