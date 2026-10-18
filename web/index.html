@@ -24,12 +24,28 @@
   </nav>
   <div class="tools">
     <button id="theme" class="icon" title="theme: auto / light / dark">◐</button>
+    <button id="helpbtn" class="icon" title="keyboard shortcuts (?)">?</button>
     <button id="gear" class="icon" title="settings">⚙</button>
   </div>
 </aside>
 <main>
 
 <div id="stale" class="notice" hidden>feedel's code changed since this copy started, so parts of the page will not work until it restarts. <button id="restart" class="solid">restart feedel</button><span class="meta" id="restart-status"></span></div>
+
+<div id="help" class="panel help" hidden>
+  <h2>keys <span class="meta">— on the feed, the papers, the library and a source's page</span></h2>
+  <dl class="keys">
+    <dt>j / k</dt><dd>next / previous item</dd>
+    <dt>o, Enter</dt><dd>open it: a paper's abstract, play a video, open a post</dd>
+    <dt>s</dt><dd>save, unsave</dd>
+    <dt>m</dt><dd>mark seen, unmark</dd>
+    <dt>a / p</dt><dd>a paper's abs page / its pdf, in the browser</dd>
+    <dt>c / r</dt><dd>who cites a paper / what it cites (INSPIRE)</dd>
+    <dt>/</dt><dd>search</dd>
+    <dt>Escape</dt><dd>clear the highlight, the search box, this help</dd>
+    <dt>?</dt><dd>this help</dd>
+  </dl>
+</div>
 
 <div id="settings" class="panel" hidden>
   <div class="grid2">
@@ -81,8 +97,14 @@
     <button class="solid">open in feedel</button>
   </form>
   <div id="papers" class="toolbar" hidden>
-    <div class="chips" id="windows">
-      <button data-w="1" class="on" title="the newest listing you have">latest</button><button data-w="3">3 days</button><button data-w="7">week</button><button data-w="0">all</button>
+    <div class="row chiprow">
+      <div class="chips" id="windows">
+        <button data-w="1" class="on" title="the most recent announcement day you have (on a weekend, Friday's)">today's listing</button><button data-w="3">3 days</button><button data-w="7">week</button><button data-w="0">all</button>
+      </div>
+      <span class="sep"></span>
+      <div class="chips" id="ptypes" title="what arXiv announced: new submissions, cross-lists from other categories, replacements of older papers">
+        <button data-pt="new" class="on">new</button><button data-pt="cross" class="on">cross-lists</button><button data-pt="replace">replacements</button>
+      </div>
     </div>
     <form id="axsearch" class="row">
       <input id="ax_q" placeholder="keywords (quote a phrase)" autocomplete="off">
