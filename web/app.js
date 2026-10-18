@@ -511,13 +511,14 @@ function article(i) {
     const vid = !!i.video;
     const thumb = vid && i.thumb && !data.settings.hide_thumbnails ? `<img loading="lazy" src="/img?u=${encodeURIComponent(i.thumb)}" alt="">` : '';
     const playBtns = vid ? `<button data-a="playurl">▶ play${i.dur ? ' · ' + dur(i.dur) : ''}</button><button data-a="dlurl" class="sec">↓ download</button>` : '';
-    const rt = (i.title || '').match(/^RT by (@\w+): ([\s\S]*)$/);
-    const text = rt ? `<span class="rt">reposted ${esc(rt[1])}</span>${esc(rt[2])}` : esc(i.title);
+    const rt = (i.title || '').match(/^RT by (@\w+): ([\s\S]*)$/), rp = (i.title || '').match(/^R to (@\w+): ([\s\S]*)$/);
+    const text = rt ? `<span class="rt">reposted ${esc(rt[1])}</span>${esc(rt[2])}` : rp ? `<span class="rt">replying to ${esc(rp[1])}</span>${esc(rp[2])}` : esc(i.title);
+    const threadBtn = `<button data-a="twthread" class="${i.convo || i.reply_to || rp ? '' : 'sec'}">thread</button>`;
     const long = (i.title || '').length > 420;
     return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
       <div class="by">${srcBtn(i)} · ${ago(i.ts)} ago${tags}</div>
       <div class="tweet${long ? ' long' : ''}">${text}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}
-      <div class="acts">${playBtns}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
+      <div class="acts">${playBtns}${threadBtn}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'rss') {
     return `<article class="${cls}" data-id="${esc(i.id)}"><div>
@@ -599,6 +600,34 @@ async function sendShare(art, recommend = false) {
     const r = await api('/api/share', { item: snapshot(it), note, topic, stream, recommend, to });
     box.remove(); toast(recommend ? `recommended to ${to.length ? to.join(', ') : 'everyone'} in #${r.stream}` : `shared to #${r.stream} › ${r.topic}`, 4000);
   } catch (e) { st.textContent = e.message; }
+}
+
+/* ------------------------------------------------------------ threads of posts on X */
+
+function twPost(t, cls = '') {
+  const vid = t.video ? `<button data-a="tw-play" data-url="${esc(t.mp4 || t.link)}">▶ play${t.dur ? ' · ' + dur(t.dur) : ''}</button>` : (t.media ? '<span class="meta">has media · </span>' : '');
+  return `<div class="twpost ${cls}"><div class="who"><b>${esc(t.name || '@' + t.user)}</b> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a></span></div>
+    <div class="tweet">${esc(t.text)}</div>${vid ? `<div class="acts">${vid}</div>` : ''}</div>`;
+}
+async function openTwThread(art) {
+  const old = art.querySelector('.twthread'); if (old) { old.remove(); return; }
+  const it = findItem(art.dataset.id); if (!it) return;
+  const box = document.createElement('div'); box.className = 'twthread'; box.innerHTML = '<span class="meta">reading the thread…</span>';
+  art.querySelector('.acts').after(box);
+  try {
+    const t = await api('/api/tw/thread?url=' + encodeURIComponent(it.link || it.id));
+    const me = t.tweet ? t.tweet.user : '';
+    const parts = [];
+    if (t.before.length) parts.push(`<div class="thsec">in reply to</div>` + t.before.map(p => twPost(p, 'before')).join(''));
+    if (t.after.length) parts.push(`<div class="thsec">the thread continues</div>` + t.after.map((p, k) => twPost(p, 'after').replace('<div class="who">', `<div class="who"><span class="n">${k + 2}/</span> `)).join(''));
+    if (t.replies.length) {
+      const others = t.replies.filter(r => r.user !== me);
+      if (others.length) parts.push(`<details class="threp"><summary class="meta">${others.length} repl${others.length === 1 ? 'y' : 'ies'} from others</summary>${others.map(p => twPost(p, 'reply')).join('')}</details>`);
+    }
+    if (!parts.length) parts.push(`<div class="meta">${t.note || 'a single post: nothing before it and no continuation by the author'}</div>`);
+    else if (t.note) parts.push(`<div class="meta">${esc(t.note)}</div>`);
+    box.innerHTML = `<div class="row thhead"><span class="meta">thread</span><span class="grow"></span><button class="link" data-a="twthread-close">close</button></div>` + parts.join('');
+  } catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
 }
 
 /* ------------------------------------------------------------ arXiv search */
@@ -943,6 +972,9 @@ document.addEventListener('click', async e => {
     return;
   }
   if (b.dataset.a === 'inbox-remove') { const it = findItem(id); await api('/api/inbox/remove', { url: it.url }); await load(); return; }
+  if (b.dataset.a === 'twthread') { openTwThread(art); return; }
+  if (b.dataset.a === 'twthread-close') { art.querySelector('.twthread')?.remove(); return; }
+  if (b.dataset.a === 'tw-play') { try { toast(await api('/api/play_url', { url: b.dataset.url })); } catch (err) { toast(err.message); } return; }
   if (b.dataset.a === 'share') { openShare(art); return; }
   if (b.dataset.a === 'share-send') { sendShare(art); return; }
   if (b.dataset.a === 'share-rec') { showPeople(art.querySelector('.share')); return; }

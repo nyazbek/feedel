@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -370,7 +370,7 @@ def write_marks(db, field, ids):
     db.execute("DELETE FROM marks WHERE user_id = ? AND seen_at IS NULL AND saved_at IS NULL", (USER_ID,))
 
 def load_cache():
-    cache = {"durations": {}, "shorts": {}, "tweets": {}, "links": {}}
+    cache = {"durations": {}, "shorts": {}, "tweets": {}, "links": {}, "threads": {}}
     with LOCK:
         for r in DB.execute("SELECT kind, key, value FROM cache").fetchall():
             cache.setdefault(r["kind"], {})[r["key"]] = json.loads(r["value"])
@@ -897,7 +897,7 @@ def tw_fetch_user(sub):
                 m = re.search(r"/status/(\d+)", it["id"])
                 media = tw_syndication(m.group(1)) if m else None
                 if media:
-                    it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos") if k in media})
+                    it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos", "reply_to", "reply_to_user", "convo") if k in media})
                     if media.get("ts"):
                         it["ts"] = media["ts"]
             return items
@@ -924,7 +924,7 @@ def tw_syndication(tid):
     """One public post as JSON (no login): text, author, time, photos and the video's mp4 variants.
     Cached forever by id since a post's media does not change; failures are not cached."""
     cached = CACHE["tweets"].get(tid)
-    if cached is not None:
+    if cached is not None and "convo" in cached:  # entries from before the reply fields existed are refreshed once
         return cached
     try:
         d = json.loads(fetch(f"https://cdn.syndication.twimg.com/tweet-result?id={tid}&token={tw_token(tid)}",
@@ -935,7 +935,10 @@ def tw_syndication(tid):
         return None
     out = {"video": False, "text": d.get("text", ""), "name": d.get("user", {}).get("name", ""),
            "user": (d.get("user", {}).get("screen_name") or "").lower(), "ts": iso_ts(d.get("created_at")),
-           "photos": [p.get("url") for p in d.get("photos", []) if p.get("url")][:4]}
+           "photos": [p.get("url") for p in d.get("photos", []) if p.get("url")][:4],
+           "reply_to": d.get("in_reply_to_status_id_str") or ((d.get("parent") or {}).get("id_str")) or "",
+           "reply_to_user": ((d.get("parent") or {}).get("user") or {}).get("screen_name", "").lower(),
+           "convo": bool(d.get("conversation_count"))}
     for m in d.get("mediaDetails", []):
         if m.get("type") in ("video", "animated_gif"):
             vs = sorted([v for v in m.get("video_info", {}).get("variants", []) if v.get("content_type") == "video/mp4" and v.get("url")],
@@ -946,6 +949,98 @@ def tw_syndication(tid):
                             "dur": ((m.get("video_info", {}).get("duration_millis") or 0) / 1000) or None})
                 break
     cache_put("tweets", tid, out)
+    return out
+
+def tw_nitter_item(block):
+    """One Nitter timeline item (a block of its HTML) → {id, link, user, name, text, ts}."""
+    um = re.search(r'class="username"[^>]*>@?([A-Za-z0-9_]+)<', block)
+    nm = re.search(r'class="fullname"[^>]*title="([^"]*)"', block)
+    lm = re.search(r'class="tweet-link" href="/([A-Za-z0-9_]+)/status/(\d+)', block)
+    dm = re.search(r'class="tweet-date"><a[^>]*title="([^"]*)"', block)
+    cm = re.search(r'class="tweet-content[^"]*"[^>]*>(.*?)</div>\s*(?:<div class="attachments"|<div class="tweet-stats"|<div class="quote|<div class="card|</div>)', block, re.S)
+    if not lm:
+        return None
+    ts = None
+    if dm:
+        for fmt in ("%b %d, %Y · %I:%M %p UTC", "%b %d, %Y · %H:%M UTC"):
+            try:
+                ts = datetime.strptime(html.unescape(dm.group(1)), fmt).replace(tzinfo=timezone.utc).timestamp()
+                break
+            except Exception:
+                pass
+    return {"id": lm.group(2), "link": f"https://x.com/{lm.group(1)}/status/{lm.group(2)}",
+            "user": (um.group(1) if um else lm.group(1)).lower(), "name": html.unescape(nm.group(1)) if nm else "",
+            "text": strip_html(cm.group(1), 2000) if cm else "", "ts": ts or time.time(),
+            "media": bool(re.search(r'class="attachments"', block))}
+
+def tw_nitter_items(seg):
+    out = []
+    for b in re.split(r'<div class="timeline-item[^"]*"', seg)[1:]:
+        it = tw_nitter_item(b)
+        if it and it["id"] not in {o["id"] for o in out}:
+            out.append(it)
+    return out
+
+def tw_thread(url):
+    """A post with its context: the posts it replies to, the author's own continuation (the thread), and other
+    people's replies. From a Nitter conversation page when an instance answers; otherwise only the parents, from
+    X's public syndication endpoint. Cached for twenty minutes."""
+    m = re.search(r"/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d+)", url)
+    if not m:
+        raise RuntimeError("that is not a link to a post")
+    user, tid = m.group(1), m.group(2)
+    cached = CACHE["threads"].get(tid)
+    if cached and cached.get("at", 0) > time.time() - 1200:
+        return cached
+    out = None
+    for inst in CONFIG["twitter"].get("nitter_instances", []):
+        try:
+            page = fetch(f"{inst.rstrip('/')}/{user}/status/{tid}", timeout=15).decode("utf-8", "ignore")
+        except Exception:
+            continue
+        if 'class="main-tweet"' not in page:
+            continue
+        def seg(start_marker, end_markers):
+            i = page.find(start_marker)
+            if i < 0:
+                return ""
+            ends = [page.find(e, i + 1) for e in end_markers]
+            ends = [e for e in ends if e > 0]
+            return page[i:min(ends)] if ends else page[i:]
+        before = tw_nitter_items(seg('class="before-tweet', ['class="main-tweet"']))
+        main = tw_nitter_items(seg('class="main-tweet"', ['class="after-tweet', 'class="replies"', 'id="r"']))
+        after = tw_nitter_items(seg('class="after-tweet', ['class="replies"', 'id="r"']))
+        replies = tw_nitter_items(seg('class="replies"', ['<footer', '</body>']))
+        if not main:  # Nitter renders the page's own post without a permalink anchor; the syndication data has it
+            d = tw_syndication(tid) or {}
+            main = [{"id": tid, "link": f"https://x.com/{user}/status/{tid}", "user": (d.get("user") or user).lower(), "name": d.get("name", ""),
+                     "text": d.get("text", ""), "ts": d.get("ts") or time.time(), "media": bool(d.get("video") or d.get("photos"))}]
+        me = main[0]["user"].lower()
+        out = {"before": before, "tweet": main[0], "after": [a for a in after if a["user"] == me],
+               "replies": [r for r in replies if r["id"] not in {a["id"] for a in after}][:40], "source": "nitter", "at": time.time()}
+        break
+    if out is None:  # no instance answered: parents only, through the syndication endpoint
+        before, cur, hops = [], tid, 0
+        while hops < 8:
+            d = tw_syndication(cur)
+            if not d or not d.get("reply_to"):
+                break
+            p = tw_syndication(d["reply_to"])
+            if not p:
+                break
+            before.insert(0, {"id": d["reply_to"], "link": f"https://x.com/{p.get('user') or 'i'}/status/{d['reply_to']}", "user": p.get("user", ""),
+                              "name": p.get("name", ""), "text": p.get("text", ""), "ts": p.get("ts") or time.time(), "media": bool(p.get("video") or p.get("photos"))})
+            cur, hops = d["reply_to"], hops + 1
+        d = tw_syndication(tid) or {}
+        out = {"before": before, "tweet": {"id": tid, "link": f"https://x.com/{user}/status/{tid}", "user": user.lower(), "name": d.get("name", ""),
+                                            "text": d.get("text", ""), "ts": d.get("ts") or time.time(), "media": bool(d.get("video"))},
+               "after": [], "replies": [], "source": "syndication", "at": time.time(),
+               "note": "no Nitter instance answered, so only the posts this one replies to are shown"}
+    for t in out["before"] + out["after"]:  # videos in the thread are playable too
+        media = tw_syndication(t["id"]) if t.get("media") else None
+        if media and media.get("video"):
+            t.update({k: media[k] for k in ("video", "mp4", "thumb", "dur")})
+    cache_put("threads", tid, out)
     return out
 
 def tw_resolve_id(num):
@@ -1978,7 +2073,7 @@ def resolve_link(url, via=""):
                 handle = media.get("user") or user.lower()
                 it = {"kind": "tw", "id": canon, "title": media["text"], "author": "@" + handle, "ts": media.get("ts") or now, "desc": "", "link": canon,
                       "follow": {"kind": "tw", "ref": handle, "name": media.get("name") or "@" + handle}}
-                it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos") if k in media})
+                it.update({k: media[k] for k in ("video", "mp4", "thumb", "dur", "photos", "reply_to", "reply_to_user", "convo") if k in media})
                 return it
             o = json.loads(fetch("https://publish.twitter.com/oembed?" + urlencode({"url": f"https://twitter.com/{user}/status/{sid}", "omit_script": "true", "dnt": "true", "hide_thread": "true"}), timeout=15))
             h = o.get("html", "")
@@ -2743,6 +2838,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "error": st.get("error"), "on": zulip_ready(), "streams": zulip_status()["streams"]})
             if p.path == "/api/zulip/people":
                 return self._send(zulip_people())
+            if p.path == "/api/tw/thread":
+                return self._send(tw_thread(q.get("url", [""])[0]))
             if p.path == "/api/zulip/topic":
                 return self._send(zulip_topic_messages(q.get("name", [""])[0], q.get("stream", [""])[0] or None))
             if p.path == "/api/zulip/search":
