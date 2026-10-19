@@ -2355,8 +2355,8 @@ def play(video_id):
     return play_url(f"https://www.youtube.com/watch?v={video_id}")
 
 def playable_url(url):
-    """Only YouTube videos, X posts and X's own video files may be handed to the player."""
-    return url.startswith("https://") and (link_kind(url) in ("yt", "tw") or urlparse(url).netloc.endswith("video.twimg.com"))
+    """Only YouTube videos, X posts, Instagram reels and X's own video files may be handed to the player."""
+    return url.startswith("https://") and (link_kind(url) in ("yt", "tw", "ig") or urlparse(url).netloc.endswith("video.twimg.com"))
 
 def play_url(url):
     cmd = [a.replace("{url}", url) for a in CONFIG.get("player", [])]
@@ -2482,7 +2482,7 @@ def source_payload(kind, id_):
 URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]]+")
 
 def link_kind(url):
-    """Which kind of thing a link points at: 'yt', 'tw', 'arxiv', 'page', or None when it is not even a link."""
+    """Which kind of thing a link points at: 'yt', 'tw', 'arxiv', 'ig' (an Instagram reel or post), 'page', or None when it is not even a link."""
     u = urlparse(url if "://" in url else "https://" + url)
     host = re.sub(r"^(www|m|mobile|music)\.", "", u.netloc.lower())
     if host in ("youtube.com", "youtu.be", "youtube-nocookie.com"):
@@ -2491,6 +2491,8 @@ def link_kind(url):
         return "tw"
     if host == "arxiv.org":
         return "arxiv"
+    if host in ("instagram.com", "instagr.am") and re.match(r"/(?:reel|reels|p|tv)/[\w-]+", u.path):
+        return "ig"
     return "page" if host and "." in host else None
 
 def resolve_link(url, via=""):
@@ -2590,6 +2592,19 @@ def resolve_link(url, via=""):
         it = items[0]
         it["follow"] = {"kind": "arxiv", "ref": "au:" + it["authors"][0], "name": it["authors"][0]} if it.get("authors") else None
         return it
+    if kind == "ig":  # a reel someone sent you: public ones come through yt-dlp without a login; private ones do not
+        m = re.search(r"/(?:reel|reels|p|tv)/([\w-]+)", u.path)
+        canon = f"https://www.instagram.com/{'p' if parts and parts[0] == 'p' else 'reel'}/{m.group(1)}/"
+        info = ytdlp_info(canon)
+        if not info:
+            raise RuntimeError("Instagram did not hand over that one without a login: a private account, a post without video, or Instagram is blocking right now")
+        handle = next((h.lstrip("@") for h in (info.get("channel"), info.get("uploader_id"), (re.search(r"^Video by (\S+)", info.get("title") or "") or [None, ""])[1])
+                       if h and not str(h).lstrip("@").isdigit()), "")
+        caption = (info.get("description") or "").strip()
+        title = caption or (info.get("title") or "").strip() or f"a reel by @{handle}"
+        return {"kind": "ig", "id": canon, "title": title[:2000], "author": "@" + handle if handle else (info.get("uploader") or "instagram"),
+                "name": info.get("uploader") or "", "ts": info.get("timestamp") or now, "desc": "", "link": canon,
+                "video": bool(info.get("formats") or info.get("url")), "thumb": info.get("thumbnail") or "", "dur": info.get("duration")}
     # any other page: title, description, site, and the feed it advertises
     page = fetch(url, timeout=20, headers={"Accept-Language": "en-US,en;q=0.9"}).decode("utf-8", "ignore")
     title = meta_content(page, "og:title") or html.unescape(re.sub(r"\s+", " ", (re.search(r"<title[^>]*>(.*?)</title>", page, re.S | re.I) or [None, ""])[1])).strip()
@@ -2604,23 +2619,35 @@ def resolve_link(url, via=""):
         it["follow"] = {"kind": "rss", "ref": href if href.startswith("http") else f"{u.scheme}://{u.netloc}/" + href.lstrip("/"), "name": site}
     return it
 
-def tw_video_info(url):
-    """Does this X post carry a video? Asked through yt-dlp without downloading. None when there is none or
-    yt-dlp is unavailable. Returns {video, thumb, dur} otherwise."""
+def ytdlp_info(url):
+    """What yt-dlp knows about a page's video without downloading it (the first entry of a carousel or playlist).
+    None when there is no video, yt-dlp fails, or yt-dlp is unavailable."""
     try:
         import yt_dlp
     except ImportError:
         return None
     try:
         with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
-                               "socket_timeout": 10, "retries": 1, "logger": _QuietLogger()}) as y:
+                               "socket_timeout": 15, "retries": 1, "logger": _QuietLogger()}) as y:
             info = y.extract_info(url, download=False)
-    except Exception:
+    except Exception as ex:
+        log("  yt-dlp", url, str(ex)[:160])
         return None
     if info and info.get("_type") == "playlist":
         entries = [e for e in (info.get("entries") or []) if e]
+        for k in ("description", "uploader", "uploader_id", "channel", "timestamp"):  # the carousel's own fields describe the post
+            if entries and info.get(k) and not entries[0].get(k):
+                entries[0][k] = info[k]
         info = entries[0] if entries else None
     if not info or not (info.get("formats") or info.get("url")):
+        return None
+    return info
+
+def tw_video_info(url):
+    """Does this X post carry a video? Asked through yt-dlp without downloading. None when there is none or
+    yt-dlp is unavailable. Returns {video, thumb, dur} otherwise."""
+    info = ytdlp_info(url)
+    if not info:
         return None
     return {"video": True, "thumb": info.get("thumbnail") or "", "dur": info.get("duration")}
 
@@ -3029,6 +3056,9 @@ def canon_key(url):
     if k == "tw":
         m = re.search(r"/status(?:es)?/(\d+)", url)
         return "tw:" + m.group(1) if m else None
+    if k == "ig":
+        m = re.search(r"/(?:reel|reels|p|tv)/([\w-]+)", url)
+        return "ig:" + m.group(1) if m else None
     if k == "page":
         return "url:" + re.sub(r"[?#].*$", "", url).rstrip("/").lower()
     return None
@@ -4023,10 +4053,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(fetch(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg"), "image/jpeg")
                 except Exception:
                     return self._send(b"", "image/jpeg", 404)
-            if p.path == "/img":  # search-result avatars; only Google's image hosts are allowed through
+            if p.path == "/img":  # avatars and video thumbnails; only the known image hosts are allowed through
                 u = q.get("u", [""])[0]
                 host = urlparse(u).netloc
-                if u.startswith("https://") and (host.endswith("ggpht.com") or host.endswith("googleusercontent.com") or host.endswith("twimg.com")):
+                if u.startswith("https://") and (host.endswith("ggpht.com") or host.endswith("googleusercontent.com") or host.endswith("twimg.com")
+                                                or host.endswith("cdninstagram.com") or host.endswith("fbcdn.net")):
                     try:
                         return self._send(fetch(u, timeout=10), "image/jpeg")
                     except Exception:

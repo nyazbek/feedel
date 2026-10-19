@@ -1,7 +1,7 @@
 /* feedel front-end. Talks only to localhost; every YouTube image is proxied by the server. */
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const KIND_LABEL = { yt: 'videos', tw: 'tweets', rss: 'posts', arxiv: 'papers' };
+const KIND_LABEL = { yt: 'videos', tw: 'tweets', rss: 'posts', arxiv: 'papers', ig: 'reels' };
 const KIND_ONE = { yt: 'channel', tw: 'account', rss: 'feed', arxiv: 'query' };
 
 let view = 'feed', kindFilter = 'all', tagFilter = null, paperWindow = 1, axResults = null, feedQuery = '', ytResults = null;
@@ -431,7 +431,7 @@ function renderSource() {
 
 function kindChips(active, counts, extraTags, activeTag, prefix) {
   const chips = [`<button data-${prefix}f="all" class="${active === 'all' ? 'on' : ''}">all</button>`];
-  for (const k of ['yt', 'tw', 'rss', 'arxiv']) if (counts[k]) chips.push(`<button data-${prefix}f="${k}" class="${active === k ? 'on' : ''}">${KIND_LABEL[k]}</button>`);
+  for (const k of ['yt', 'tw', 'rss', 'arxiv', 'ig']) if (counts[k]) chips.push(`<button data-${prefix}f="${k}" class="${active === k ? 'on' : ''}">${KIND_LABEL[k]}</button>`);
   chips.push(...extraTags.map(t => `<button data-${prefix}tag="${esc(t)}" class="tag ${activeTag === t ? 'on' : ''}">${esc(t)}</button>`));
   return chips.join('');
 }
@@ -590,6 +590,16 @@ function article(i) {
       <div class="by">${srcBtn(i)} · ${ago(i.ts)} ago${tags}</div>${context}
       <div class="tweet${long ? ' long' : ''}">${text}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}
       <div class="acts">${playBtns}${threadBtn}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
+  }
+  if (i.kind === 'ig') {
+    // a reel someone sent you: pre-approved, played in your player, never on Instagram
+    const thumb = i.thumb && !data.settings.hide_thumbnails ? `<img loading="lazy" src="/img?u=${encodeURIComponent(i.thumb)}" alt="">` : '';
+    const playBtns = i.video ? `<button data-a="playurl">▶ play${i.dur ? ' · ' + dur(i.dur) : ''}</button><button data-a="dlurl" class="sec">↓ download</button>` : '';
+    const long = (i.title || '').length > 420;
+    return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
+      <div class="by"><b>${esc(i.name || i.author || '')}</b>${i.name && i.author ? ' · ' + esc(i.author) : ''} · instagram · ${ago(i.ts)} ago${tags}</div>
+      <div class="tweet${long ? ' long' : ''}">${esc(i.title)}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}
+      <div class="acts">${playBtns}<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'rss') {
     return `<article class="${cls}" data-id="${esc(i.id)}"><div>
