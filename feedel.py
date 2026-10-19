@@ -26,7 +26,7 @@ if len(sys.argv) > 1 and any(a in ("-J", "-j", "--dump-single-json", "--dump-jso
     sys.exit(yt_dlp.main())
 
 import base64, csv, hashlib, html, io, json, os, re, shutil, sqlite3, subprocess, threading, time, uuid
-import urllib.error, urllib.request
+import urllib.error, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
 from contextlib import contextmanager
@@ -217,6 +217,15 @@ def iso_ts(s):
     except Exception:
         return None
 
+def clean_name(s):
+    """A channel's name as one line: YouTube hands over names padded with dozens of newlines, which made a row a screen tall."""
+    return re.sub(r"\s+", " ", str(s or "")).strip()
+
+def clean_handle(s):
+    """A handle as typed, not percent-encoded ('@MinEconom%C3%ADa_AR' → '@MinEconomía_AR')."""
+    s = str(s or "").strip()
+    return urllib.parse.unquote(s) if "%" in s else s
+
 def strip_html(s, limit=400):
     s = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", s or "", flags=re.S | re.I)
     s = re.sub(r"<br\s*/?>|</p>|</div>|</li>", "\n", s, flags=re.I)
@@ -336,6 +345,7 @@ def load_subs(kind):
         rec = {"id": r["ref"], "name": r["name"], "handle": "", "avatar": "", "tags": json.loads(r["tags"]), "muted": bool(r["muted"]),
                "min_minutes": r["min_minutes"], "note": r["note"], "added": r["added"]}
         rec.update(json.loads(r["meta_json"]))  # handle, avatar, site, qtype, an unresolved ref (then id is ''), anything else
+        rec["name"], rec["handle"] = clean_name(rec.get("name")) or rec["name"], clean_handle(rec.get("handle"))
         if r["error"]:
             rec["error"] = r["error"]
         if r["last_fetched"]:
@@ -634,6 +644,7 @@ def save_cache():
 # ---------------------------------------------------------------- subscriptions (all kinds)
 
 def new_sub(kind, id_, name="", handle="", avatar="", **extra):
+    name, handle = clean_name(name), clean_handle(handle)
     rec = {"id": id_, "name": name or (("@" + id_) if kind == "tw" else id_), "handle": handle,
            "avatar": avatar, "tags": [], "muted": False, "min_minutes": None, "note": "",
            "added": int(time.time())}
@@ -2782,7 +2793,7 @@ def open_link_cli(url):
     """`feedel --open URL`: a video, post, paper or page link goes to the inbox and the page opens on it;
     anything else goes to the normal browser. This is what makes feedel usable as the system's link handler."""
     k = link_kind(url)
-    if k in ("yt", "tw", "arxiv"):
+    if k in ("yt", "tw", "arxiv", "ig"):
         import webbrowser
         target = f"http://localhost:{PORT}/open?" + urlencode({"u": url})
         import socket
