@@ -911,7 +911,7 @@ async function loadUnfollowed() {
   $('#unfcount').textContent = list.length ? `${list.length}` : '';
   $('#unf').innerHTML = list.map(u => `<div class="person"><div class="av">${{ tw: '𝕏', rss: 'rss', arxiv: 'arXiv' }[u.kind] || 'yt'}</div>
     <div><div class="nm">${esc(u.name || u.ref)}<span class="h">${esc(KIND_LABEL[u.kind] || u.kind)} · unfollowed ${ago(u.removed)} ago</span></div></div>
-    <div class="side"><button class="link" data-a="unf-follow" data-kind="${esc(u.kind)}" data-ref="${esc(u.ref)}" data-name="${esc(u.name || '')}">follow again</button><button class="link" data-a="unf-forget" data-kind="${esc(u.kind)}" data-ref="${esc(u.ref)}">forget</button></div></div>`).join('');
+    <div class="pacts"><button class="link" data-a="unf-follow" data-kind="${esc(u.kind)}" data-ref="${esc(u.ref)}" data-name="${esc(u.name || '')}">follow again</button><button class="link" data-a="unf-forget" data-kind="${esc(u.kind)}" data-ref="${esc(u.ref)}">forget</button></div></div>`).join('');
 }
 
 function personRow(s) {
@@ -926,7 +926,7 @@ function personRow(s) {
       ${s.kind === 'yt' ? `<label>min <input class="mm" data-k="min_minutes" type="number" min="0" value="${s.min_minutes ?? ''}" placeholder="–"> min</label>` : ''}
       <label>why <input class="note" data-k="note" value="${esc(s.note || '')}" placeholder="why do I follow this?"></label>
     </div></div>
-    <div class="side"><button class="link" data-a="mute">${s.muted ? 'unmute' : 'mute'}</button><button class="link" data-a="unfollow">unfollow</button></div></div>`;
+    <div class="pacts"><button class="link" data-a="mute">${s.muted ? 'unmute' : 'mute'}</button><button class="link" data-a="unfollow">unfollow</button></div></div>`;
 }
 
 function renderSubs() {
@@ -999,7 +999,7 @@ async function addOrSearch() {
     $('#results').innerHTML = rs.map(r => `<div class="person" data-kind="yt" data-id="${esc(r.id)}">
       ${r.avatar ? `<img class="av" src="/img?u=${encodeURIComponent(r.avatar)}" alt="" loading="lazy">` : '<div class="av">yt</div>'}
       <div><div class="nm">${esc(r.name)}<span class="h">${esc(r.handle)}${r.subs ? ' · ' + esc(r.subs) : ''}</span></div><div class="d">${esc(r.desc)}</div></div>
-      <div class="side">${r.following ? '<span class="meta">following</span>' : `<button class="solid" data-a="follow" data-name="${esc(r.name)}">follow</button>`}</div></div>`).join('');
+      <div class="pacts">${r.following ? '<span class="meta">following</span>' : `<button class="solid" data-a="follow" data-name="${esc(r.name)}">follow</button>`}</div></div>`).join('');
   } catch (e) { $('#results').innerHTML = `<div class="warn">${esc(e.message)}</div>`; }
 }
 

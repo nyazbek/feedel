@@ -260,8 +260,8 @@ article.digest .desc span{display:block;color:var(--mut)}
 .person .fields input.tags{width:160px}
 .person .fields input.note{width:220px}
 .person .fields input.mm{width:46px}
-.person .side{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
-.person .side .link{padding:2px 7px}
+.person .pacts{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.person .pacts .link{padding:2px 7px}
 .srchead{display:grid;grid-template-columns:64px 1fr;gap:16px;align-items:start}
 .srchead:hover{background:transparent}
 .srchead .av{width:64px;height:64px;border-radius:50%;object-fit:cover;background:var(--soft);border:1px solid var(--line)}
