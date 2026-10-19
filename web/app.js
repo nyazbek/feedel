@@ -152,6 +152,7 @@ function render() {
   else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
   restoreThreads();
+  for (const [id, st] of twOpen) { const a = document.querySelector(`article[data-id="${CSS.escape(id)}"]`); if (a && !a.querySelector('.twthread')) openTwThread(a, st.cur, false, st.stack); }
   restoreInspire();
   restoreCur();
   fillInspire();
@@ -581,14 +582,14 @@ function article(i) {
     const rt = (i.title || '').match(/^RT by (@\w+): ([\s\S]*)$/), rp = (i.title || '').match(/^R to (@\w+): ([\s\S]*)$/);
     const me = (i.author || '').replace(/^@/, '').toLowerCase();
     // the post being answered, or quoted, sits right above the post: a reply without its context is half a sentence
-    const ctx = (c, label) => c ? `<div class="ctx"><span class="meta">${label} <b>${esc(c.name || '@' + c.user)}</b> @${esc(c.user)}${c.media ? ' · has media' : ''} · <a href="${esc(c.link)}" target="_blank" rel="noopener">${c.ts ? ago(c.ts) + ' ago' : 'open'}</a></span><div class="ctxt">${esc(c.text)}</div></div>` : '';
+    const ctx = (c, label) => c ? `<div class="ctx"><span class="meta">${label} <b>${esc(c.name || '@' + c.user)}</b> @${esc(c.user)}${c.media ? ' · has media' : ''} · <a href="${esc(c.link)}" target="_blank" rel="noopener">${c.ts ? ago(c.ts) + ' ago' : 'open ↗'}</a> · <button class="link" data-a="twgo" data-url="${esc(c.link)}">see it</button></span><div class="ctxt">${esc(c.text)}</div></div>` : '';
     const context = ctx(i.parent, i.parent && i.parent.user === me ? 'continuing their thread:' : 'replying to') + ctx(i.quote, 'quoting');
     const text = rt ? `<span class="rt">reposted ${esc(rt[1])}</span>${esc(rt[2])}` : rp ? (i.parent ? esc(rp[2]) : `<span class="rt">replying to ${esc(rp[1])}</span>${esc(rp[2])}`) : esc(i.title);
     const threadBtn = `<button data-a="twthread" class="${i.convo || i.reply_to || rp ? '' : 'sec'}">thread</button>`;
     const long = (i.title || '').length > 420;
     return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
       <div class="by">${srcBtn(i)} · ${ago(i.ts)} ago${tags}</div>${context}
-      <div class="tweet${long ? ' long' : ''}">${text}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}
+      <div class="tweet${long ? ' long' : ''}">${text}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}${photos(i.photos)}
       <div class="acts">${playBtns}${threadBtn}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'ig') {
@@ -689,18 +690,31 @@ async function sendShare(art, recommend = false) {
 
 /* ------------------------------------------------------------ threads of posts on X */
 
-function twPost(t, cls = '', num = '', tag = '') {
-  const vid = t.video ? `<button data-a="tw-play" data-url="${esc(t.mp4 || t.link)}">▶ play${t.dur ? ' · ' + dur(t.dur) : ''}</button>` : (t.media ? '<span class="meta">has media · </span>' : '');
-  return `<div class="twpost ${cls}"><div class="who">${num ? `<span class="n">${num}</span> ` : ''}<b>${esc(t.name || '@' + t.user)}</b> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a>${tag ? ' · ' + tag : ''}</span></div>
-    <div class="tweet">${esc(t.text)}</div>${vid ? `<div class="acts">${vid}</div>` : ''}</div>`;
+// the photos of a post, through the image proxy (never fetched from X by the browser); click opens the full size
+function photos(list) {
+  if (!list || !list.length || (data && data.settings && data.settings.hide_thumbnails)) return '';
+  return `<div class="photos">${list.map(u => `<a href="/img?u=${encodeURIComponent(u)}" target="_blank" rel="noopener"><img loading="lazy" src="/img?u=${encodeURIComponent(u + (u.includes('?') ? '&' : '?') + 'name=small')}" alt=""></a>`).join('')}</div>`;
 }
-async function openTwThread(art) {
-  const old = art.querySelector('.twthread'); if (old) { old.remove(); return; }
+function twPost(t, cls = '', num = '', tag = '') {
+  const vid = t.video ? `<button data-a="tw-play" data-url="${esc(t.mp4 || t.link)}">▶ play${t.dur ? ' · ' + dur(t.dur) : ''}</button>` : (t.media && !(t.photos || []).length ? '<span class="meta">has media · </span>' : '');
+  const go = cls === 'cur' ? '' : `<button data-a="twgo" data-url="${esc(t.link)}" class="sec">open</button>`;
+  return `<div class="twpost ${cls}"><div class="who">${num ? `<span class="n">${num}</span> ` : ''}<b>${esc(t.name || '@' + t.user)}</b> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a>${tag ? ' · ' + tag : ''}</span></div>
+    <div class="tweet">${esc(t.text)}</div>${photos(t.photos)}${vid || go ? `<div class="acts">${vid}${go}</div>` : ''}</div>`;
+}
+const twOpen = new Map();  // article id → {stack, cur}: open X thread boxes survive a re-render of the list
+async function openTwThread(art, url, push, restore) {
+  let box = art.querySelector('.twthread');
+  if (box && !url) { box.remove(); twOpen.delete(art.dataset.id); return; }
   const it = findItem(art.dataset.id); if (!it) return;
-  const box = document.createElement('div'); box.className = 'twthread'; box.innerHTML = '<span class="meta">reading the thread…</span>';
-  art.querySelector('.acts').after(box);
+  const target = url || it.link || it.id;
+  if (!box) { box = document.createElement('div'); box.className = 'twthread'; box._stack = url ? [it.link || it.id] : []; art.querySelector(':scope > div > .acts, :scope > .acts').after(box); }  // opened from a context block: back returns to this post's own thread
+  else if (push && box._cur) box._stack.push(box._cur);
+  if (restore) box._stack = restore.slice();
+  box._cur = target;
+  twOpen.set(art.dataset.id, { stack: box._stack.slice(), cur: target });
+  box.innerHTML = '<span class="meta">reading the thread…</span>';
   try {
-    const t = await api('/api/tw/thread?url=' + encodeURIComponent(it.link || it.id));
+    const t = await api('/api/tw/thread?url=' + encodeURIComponent(target));
     const me = t.tweet ? t.tweet.user : '';
     const parts = [];
     if (t.before.length) parts.push(`<div class="thsec">in reply to</div>` + t.before.map(p => twPost(p, 'before')).join(''));
@@ -716,8 +730,10 @@ async function openTwThread(art) {
     }
     if (!parts.length) parts.push(`<div class="meta">${t.note || 'a single post: nothing before it, no continuation by the author and no replies'}</div>`);
     else if (t.note) parts.push(`<div class="meta">${esc(t.note)}</div>`);
-    box.innerHTML = `<div class="row thhead"><span class="meta">thread</span><span class="grow"></span><button class="link" data-a="twthread-close">close</button></div>` + parts.join('');
-  } catch (e) { box.innerHTML = `<span class="warn">${esc(e.message)}</span>`; }
+    const back = box._stack.length ? `<button class="link" data-a="twthread-back">← back</button>` : '';
+    const here = url ? `<span class="meta">thread of <b>@${esc(me)}</b></span>` : `<span class="meta">thread</span>`;
+    box.innerHTML = `<div class="row thhead">${back}${here}<span class="grow"></span><button class="link" data-a="twthread-close">close</button></div>` + parts.join('');
+  } catch (e) { box.innerHTML = `<div class="row thhead">${box._stack.length ? '<button class="link" data-a="twthread-back">← back</button>' : ''}<span class="grow"></span><button class="link" data-a="twthread-close">close</button></div><span class="warn">${esc(e.message)}</span>`; }
 }
 
 /* ------------------------------------------------------------ INSPIRE-HEP: citations and references of a paper */
@@ -1348,7 +1364,9 @@ document.addEventListener('click', async e => {
   }
   if (b.dataset.a === 'inbox-remove') { const it = findItem(id); await api('/api/inbox/remove', { url: it.url }); await load(); return; }
   if (b.dataset.a === 'twthread') { openTwThread(art); return; }
-  if (b.dataset.a === 'twthread-close') { art.querySelector('.twthread')?.remove(); return; }
+  if (b.dataset.a === 'twthread-close') { art.querySelector('.twthread')?.remove(); twOpen.delete(art.dataset.id); return; }
+  if (b.dataset.a === 'twgo') { openTwThread(art, b.dataset.url, true); return; }
+  if (b.dataset.a === 'twthread-back') { const box = art.querySelector('.twthread'); const prev = box && box._stack.pop(); if (prev) openTwThread(art, prev, false, box._stack); return; }
   if (b.dataset.a === 'tw-play') { try { toast(await api('/api/play_url', { url: b.dataset.url })); } catch (err) { toast(err.message); } return; }
   if (b.dataset.a === 'share') { openShare(art); return; }
   if (b.dataset.a === 'share-send') { sendShare(art); return; }

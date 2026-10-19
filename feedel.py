@@ -1199,10 +1199,12 @@ def tw_thread(url):
     out = {"before": others_above, "tweet": main, "posts": ordered, "index": index,
            "after": ordered[index + 1:], "replies": [r for r in page["replies"] if r["user"] != me and r["id"] not in posts][:40],
            "source": "nitter", "at": time.time()}
-    for t in out["before"] + out["posts"]:  # videos in the thread are playable too
+    for t in out["before"] + out["posts"] + out["replies"]:  # videos in the thread are playable, photos shown
         media = tw_syndication(t["id"]) if t.get("media") else None
         if media and media.get("video"):
             t.update({k: media[k] for k in ("video", "mp4", "thumb", "dur")})
+        if media and media.get("photos"):
+            t["photos"] = media["photos"][:4]
     cache_put("threads", tid, out)
     return out
 

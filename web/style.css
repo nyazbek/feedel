@@ -311,3 +311,7 @@ pre.cmd{font:13px/1.5 ui-monospace,Consolas,monospace;background:var(--soft);bor
 .steps-box summary{cursor:pointer}
 .steps-box .steps{font-size:13.5px}
 .steps-box p{margin:8px 0 0}
+.photos{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+.photos img{height:140px;max-width:260px;object-fit:cover;border-radius:var(--r2);border:1px solid var(--line);background:var(--soft)}
+.ctx .meta button.link{padding:0 4px;font-size:12.5px}
+.twthread .thhead .meta b{color:var(--fg);font-weight:600}
