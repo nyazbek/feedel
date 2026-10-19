@@ -3414,6 +3414,57 @@ def ig_ready():
 def ig_api():
     return ((CONFIG.get("instagram") or {}).get("api") or IG_API).rstrip("/")
 
+def doh_resolve(host):
+    """An address for a host through DNS over HTTPS, for when the system's resolver refuses it (a VPN or ad-blocking
+    resolver that lists graph.instagram.com as a tracker). Cached for the run."""
+    cache = STATE.setdefault("doh", {})
+    if host in cache:
+        return cache[host]
+    for base in ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve"):
+        try:
+            d = json.loads(fetch(base + "?" + urlencode({"name": host, "type": "A"}), timeout=10, headers={"Accept": "application/dns-json"}))
+            ip = next((a["data"] for a in d.get("Answer") or [] if a.get("type") == 1), None)
+            if ip:
+                cache[host] = ip
+                return ip
+        except Exception:
+            continue
+    return None
+
+def fetch_pinned(url, ip, timeout=25, headers=None, data=None, method=None):
+    """fetch(), but to a given address, with TLS still verified against the host's name (SNI and certificate)."""
+    import http.client, socket, ssl
+    u = urlparse(url)
+    class Pinned(http.client.HTTPSConnection):
+        def connect(self):
+            sock = socket.create_connection((ip, self.port), self.timeout)
+            self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname=u.hostname)
+    conn = Pinned(u.hostname, u.port or 443, timeout=timeout)
+    hdrs = {"User-Agent": "feedel/1.0", "Host": u.hostname, **(headers or {})}
+    conn.request(method or ("POST" if data is not None else "GET"), u.path + ("?" + u.query if u.query else ""), body=data, headers=hdrs)
+    r = conn.getresponse()
+    body = r.read()
+    conn.close()
+    if r.status >= 400:
+        raise urllib.error.HTTPError(url, r.status, r.reason, r.headers, io.BytesIO(body))
+    return body
+
+def ig_http(url, data=None, headers=None, method=None, timeout=25):
+    """A request to Meta's API that survives a resolver blocking its host: on a name-resolution failure the host is
+    looked up over DNS over HTTPS and the connection pinned to that address."""
+    import socket
+    try:
+        return fetch(url, timeout=timeout, data=data, headers=headers, method=method)
+    except urllib.error.URLError as e:
+        if isinstance(getattr(e, "reason", None), socket.gaierror) or "getaddrinfo" in str(e):
+            host = urlparse(url).hostname
+            ip = doh_resolve(host)
+            if not ip:
+                raise RuntimeError(f"{host} cannot be resolved here (your DNS blocks it) and the DNS-over-HTTPS fallback failed too")
+            log(f"  {host}: the system resolver refuses it; connecting to {ip} directly")
+            return fetch_pinned(url, ip, timeout=timeout, headers=headers, data=data, method=method)
+        raise
+
 def ig_request(path, params=None, data=None, token=None):
     """One call to Meta's Instagram API as you (Bearer token). `data` posts JSON. Errors come back as Meta phrased them."""
     token = token or ig_cfg()[0]
@@ -3427,7 +3478,7 @@ def ig_request(path, params=None, data=None, token=None):
     if data is not None:
         body, headers["Content-Type"] = json.dumps(data).encode(), "application/json"
     try:
-        r = fetch(url, timeout=25, data=body, headers=headers)
+        r = ig_http(url, data=body, headers=headers)
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", "ignore")
         try:
@@ -3470,7 +3521,7 @@ def ig_refresh_token():
     if not token or expires - time.time() > 10 * 86400:
         return
     try:
-        r = json.loads(fetch("https://graph.instagram.com/refresh_access_token?" + urlencode({"grant_type": "ig_refresh_token", "access_token": token}), timeout=20))
+        r = json.loads(ig_http("https://graph.instagram.com/refresh_access_token?" + urlencode({"grant_type": "ig_refresh_token", "access_token": token}), timeout=20))
         if r.get("access_token"):
             with LOCK:
                 CONFIG["instagram"].update({"token": r["access_token"], "expires": int(time.time()) + int(r.get("expires_in") or 60 * 86400)})
