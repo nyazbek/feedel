@@ -3086,10 +3086,28 @@ def item_key(it):
     return canon_key(item_link(it))
 
 def zulip_clean(content, site):
-    """Zulip's rendered HTML, made safe for the page: no scripts, absolute links back to the site, images as links."""
-    content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content or "", flags=re.S | re.I)
-    content = re.sub(r'(href|src)="/', r'\1="' + site + "/", content)
+    """Zulip's rendered HTML, made safe for the page: no scripts, absolute links back to the site, images as links,
+    videos as a small player (uploads on the Zulip itself go through /zmedia, which carries your credentials),
+    emoji as the characters they stand for. Safe to apply twice."""
+    content = re.sub(r"<(script|style|iframe|object|embed)[^>]*>.*?</\1>", "", content or "", flags=re.S | re.I)
+    content = re.sub(r"<(iframe|object|embed)[^>]*/?>", "", content, flags=re.I)
+    content = re.sub(r'(href|src)="/(?!zmedia\?)', r'\1="' + site + "/", content)
+    def video(m):
+        src = html.unescape(m.group(1))
+        if src.startswith("/zmedia?"):
+            return m.group(0)
+        if site and src.startswith(site + "/"):
+            src = "/zmedia?" + urlencode({"u": src})
+        return f'<video controls preload="metadata" src="{html.escape(src)}"></video>'
+    content = re.sub(r'<video[^>]+src="([^"]+)"[^>]*>(?:\s*</video>)?', video, content, flags=re.I)
+    content = re.sub(r'<a[^>]*>\s*(<video[^>]*></video>)\s*</a>', r'\1', content, flags=re.I | re.S)  # the link around a player would take the clicks
     content = re.sub(r'<img[^>]+src="([^"]+)"[^>]*>', r'<a href="\1" target="_blank" rel="noopener">[image]</a>', content)
+    def emoji(m):
+        try:
+            return "".join(chr(int(h, 16)) for h in m.group(1).split("-"))
+        except ValueError:
+            return m.group(2)
+    content = re.sub(r'<span class="emoji emoji-([0-9a-f-]+)"[^>]*>(.*?)</span>', emoji, content, flags=re.I)
     return content
 
 def zulip_message(m, site, me, stream=None):
@@ -3687,8 +3705,11 @@ def link_titles(links):
 
 def msg_payload(include_archived=False):
     msgs = msg_list(include_archived)
+    site = zulip_cfg()[0]
     for m in msgs:
         m["links"] = link_titles(m["links"])
+        if m["meta"].get("html") and m["channel"] in ("zulip", "me"):  # earlier messages get the same cleaning as new ones
+            m["body"] = zulip_clean(m["body"], site)
     return {"messages": msgs, "unread": msg_unread(), "zulip": zulip_ready(), "dm_error": STATE.get("dm_error"), "dm_at": STATE.get("dm_at"),
             "instagram": ig_status()}
 
@@ -4294,6 +4315,30 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(fetch(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg"), "image/jpeg")
                 except Exception:
                     return self._send(b"", "image/jpeg", 404)
+            if p.path == "/zmedia":  # a file uploaded to the group's Zulip, fetched with your credentials (the browser has none)
+                u = q.get("u", [""])[0]
+                site, email, key, _ = zulip_cfg()
+                if not (site and u.startswith(site + "/")):
+                    return self._send("not a file on your Zulip", "text/plain", 403)
+                try:
+                    hdrs = {"Authorization": "Basic " + base64.b64encode(f"{email}:{key}".encode()).decode(), "User-Agent": "feedel/1.0"}
+                    if self.headers.get("Range"):
+                        hdrs["Range"] = self.headers["Range"]
+                    with urllib.request.urlopen(urllib.request.Request(u, headers=hdrs), timeout=60) as r:
+                        body = r.read()
+                        self.send_response(r.status)
+                        for h in ("Content-Type", "Content-Range", "Accept-Ranges"):
+                            if r.headers.get(h):
+                                self.send_header(h, r.headers[h])
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "private, max-age=86400")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                except urllib.error.HTTPError as e:
+                    return self._send(f"Zulip said {e.code}", "text/plain", e.code)
+                except Exception as ex:
+                    return self._send(str(ex), "text/plain", 502)
             if p.path == "/img":  # avatars and video thumbnails; only the known image hosts are allowed through
                 u = q.get("u", [""])[0]
                 host = urlparse(u).netloc
