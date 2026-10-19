@@ -26,7 +26,7 @@ This document is the plan. Argue with it in issues; change it in pull requests.
 - Inbox: links from WhatsApp or anywhere, by paste, by an opt-in clipboard watcher, or by making feedel the system link handler on Windows (other links go to your normal browser).
 - Source pages, a tagged library with notes, search over what you follow with an explicit YouTube search behind it, calm titles, block words, per-source minimum length and cap.
 - Zulip: share per kind, recommend to friends, discussion lines with inline threads and replies, a talk view of topics. The **talk** tab: the group's streams read and discussed from inside feedel, new topics, search, quiet read state, reactions, editing your own messages.
-- Messages: a box for friends' Zulip direct messages and for notes from Claude, which talks to feedel as an MCP server (`/mcp`) and can write a daily briefing with tasks (the `feedel-briefing` skill).
+- Messages: a box for friends' Zulip direct messages, your Instagram direct messages (Meta's official API, professional account) and for notes from Claude, which talks to feedel as an MCP server (`/mcp`) and can write a daily briefing with tasks (the `feedel-briefing` skill).
 - One SQLite file, a single-file executable for Windows and macOS built on every tag.
 
 ## Milestones

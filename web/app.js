@@ -850,6 +850,7 @@ function fillSettings() {
   for (const k of ['yt', 'arxiv', 'rss', 'tw']) { $('#z_s_' + k).value = (z.streams_set || {})[k] || ''; $('#z_s_' + k).placeholder = z.stream || 'feedel'; }
   $('#z_recs').value = z.recs_stream || '';
   $('#z_status').textContent = '';
+  fillInstagram(s.instagram);
 }
 async function testZulip() {
   await saveSettings(true);
@@ -1138,6 +1139,7 @@ function md(src) {
 
 function msgFrom(m) {
   if (m.channel === 'claude') return '<span class="from claude">✦ Claude</span>';
+  if (m.channel === 'ig') return `<span class="from">${esc(m.sender || 'an Instagram account')}</span> <span class="meta">· instagram</span>`;
   if (m.channel === 'me') { const to = (m.meta && m.meta.to || []).map(p => p.name || p.email).filter(Boolean).join(', '); return `<span class="from">you${to ? ' → ' + esc(to) : ''}</span>`; }
   return `<span class="from">${esc(m.sender || 'a friend')}</span>`;
 }
@@ -1158,9 +1160,10 @@ async function renderMessages() {
   try {
     msgData = await api('/api/messages?refresh=1' + (msgArchived ? '&archived=1' : ''));
   } catch (e) { list.innerHTML = `<span class="warn">${esc(e.message)}</span>`; return; }
-  const z = msgData.zulip;
+  const z = msgData.zulip, ig = msgData.instagram || {};
   $('#msg-compose').hidden = !z;
   $('#msg-state').innerHTML = (z ? `direct messages on Zulip land here${msgData.dm_error ? ` <span class="warn">(last check failed: ${esc(msgData.dm_error)})</span>` : ''}; ` : 'connect a group in the friends tab and your friends\' direct messages land here too; ') +
+    (ig.on ? `Instagram direct messages of @${esc(ig.username)} too${ig.error ? ` <span class="warn">(last check failed: ${esc(ig.error)})</span>` : ''}; ` : '') +
     'Claude leaves notes here when you connect it (settings → Claude).';
   setMsgCount(msgData.unread);
   if (!msgData.messages.length) { list.innerHTML = '<p class="meta">nothing here yet.</p>'; return; }
@@ -1174,6 +1177,22 @@ async function renderMessages() {
 
 // the settings panel shows the MCP address of this very instance (the port can differ from the default)
 (function mcpAddress() { const u = location.origin + '/mcp'; const e = $('#mcp_url'), c = $('#mcp_cmd'); if (e) e.textContent = u; if (c) c.textContent = 'claude mcp add --transport http feedel ' + u; })();
+function fillInstagram(ig) {
+  ig = ig || {};
+  const st = $('#ig_status'); if (!st) return;
+  st.textContent = ig.on ? `connected as @${ig.username}${ig.expires ? ' · token until ' + new Date(ig.expires * 1000).toLocaleDateString() : ''}` : 'not connected';
+  $('#ig_disconnect').hidden = !ig.on; $('#ig_connect').textContent = ig.on ? 'replace token' : 'connect';
+}
+async function igClick(b) {
+  if (b.id === 'ig_connect') {
+    const token = $('#ig_token').value.trim(); if (!token) { toast('paste the token first'); return; }
+    b.disabled = true; $('#ig_status').textContent = 'checking with Meta…';
+    try { const r = await api('/api/ig/connect', { token }); $('#ig_token').value = ''; toast(`connected as @${r.username}${r.new ? ` · ${r.new} new message${r.new === 1 ? '' : 's'}` : ''}`); await load(); fillInstagram((data.settings || {}).instagram); if (r.error) $('#ig_status').textContent += ' · ' + r.error; }
+    catch (e) { $('#ig_status').textContent = e.message; }
+    finally { b.disabled = false; }
+  }
+  if (b.id === 'ig_disconnect') { await api('/api/ig/disconnect', {}); await load(); fillInstagram((data.settings || {}).instagram); }
+}
 function setMsgCount(n) { const e = $('#msgcnt'); if (e) e.textContent = n ? ` ${n}` : ''; }
 
 async function msgClick(b) {
@@ -1204,7 +1223,7 @@ async function msgClick(b) {
     let box = card.querySelector('.mreply');
     if (box) { box.remove(); return; }
     box = document.createElement('div'); box.className = 'mreply';
-    const who = m.channel === 'claude' ? 'Claude reads this the next time it looks at your messages' : `a direct message to ${esc(m.sender || 'them')} on Zulip`;
+    const who = m.channel === 'claude' ? 'Claude reads this the next time it looks at your messages' : m.channel === 'ig' ? `a direct message to ${esc(m.sender || 'them')} on Instagram (Meta allows it within 24 h of their last message)` : `a direct message to ${esc(m.sender || 'them')} on Zulip`;
     box.innerHTML = `<textarea rows="3" placeholder="${who}"></textarea><div class="row"><button class="solid" data-a="msg-reply-send">send</button><span class="meta">${who}</span></div>`;
     card.appendChild(box); box.querySelector('textarea').focus();
     return;
@@ -1283,6 +1302,7 @@ document.addEventListener('click', async e => {
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
+  if (b.id === 'ig_connect' || b.id === 'ig_disconnect') { igClick(b); return; }
   if (b.id === 'quit') { if (confirm('stop feedel? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">feedel stopped. start it again to continue.</p></main>'; } return; }
   if (b.id === 'importbtn') { const t = $('#paste').value.trim(); if (t) { importText(t, ''); $('#paste').value = ''; } return; }
   if (b.id === 'gconnect') { connectGoogle(); return; }

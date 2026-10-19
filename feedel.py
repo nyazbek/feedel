@@ -91,6 +91,8 @@ DEFAULT_CONFIG = {
     # "streams": where each kind of share goes (videos → #vids, papers → #papers…); empty means the default stream;
     # "extra_streams": other streams the talk tab shows and lets you read, search and post in;
     # "recs_stream": where recommendations between friends go; a message there mentioning you is a recommendation for you
+    # your Instagram direct messages, through Meta's API with Instagram login (a professional account and a token from the app dashboard)
+    "instagram": {"token": "", "user_id": "", "username": "", "expires": 0},
     "zulip": {"site": "", "email": "", "api_key": "", "stream": "feedel", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
               "extra_streams": [], "recs_stream": "recommendations",
               # "invite": a reusable invitation link to the group's Zulip; "organizer": whom a friend writes to for access
@@ -1695,6 +1697,7 @@ def refresh(force=False):
         sync_accounts(force)
         threading.Thread(target=zulip_fetch_stream, daemon=True).start()
         threading.Thread(target=zulip_fetch_dms, daemon=True).start()
+        threading.Thread(target=ig_fetch_dms, daemon=True).start()
         errors, counts, done_at = [], Counter(), {}
         with LOCK:
             newest = newest_by_source()
@@ -1836,6 +1839,7 @@ def settings_payload():
                       "recs_stream": zulip_recs_stream(),
                       "invite": z.get("invite", ""), "organizer": z.get("organizer", ""),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
+            "instagram": {k: v for k, v in ig_status().items() if k != "error"},
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             "window_libs_missing": window_libs_missing(), "in_window": "show" in WINDOW,
             **CONFIG["ui"]}
@@ -3395,6 +3399,170 @@ def topics_with_items(topics):
         t["item"] = next((by_key[k] for k in t["keys"] if k in by_key), None)
     return topics
 
+# ---------------------------------------------------------------- instagram (your direct messages, through Meta's API with Instagram login)
+
+IG_API = "https://graph.instagram.com/v23.0"
+
+def ig_cfg():
+    z = CONFIG.get("instagram") or {}
+    return (z.get("token") or "").strip(), str(z.get("user_id") or ""), z.get("username") or "", int(z.get("expires") or 0)
+
+def ig_ready():
+    token, uid, _, _ = ig_cfg()
+    return bool(token and uid)
+
+def ig_api():
+    return ((CONFIG.get("instagram") or {}).get("api") or IG_API).rstrip("/")
+
+def ig_request(path, params=None, data=None, token=None):
+    """One call to Meta's Instagram API as you (Bearer token). `data` posts JSON. Errors come back as Meta phrased them."""
+    token = token or ig_cfg()[0]
+    if not token:
+        raise RuntimeError("Instagram is not connected yet: paste a token under settings")
+    url = (ig_api() if path.startswith("/") else path) + (path if path.startswith("/") else "")
+    if params:
+        url += ("&" if "?" in url else "?") + urlencode(params)
+    headers = {"Authorization": "Bearer " + token}
+    body = None
+    if data is not None:
+        body, headers["Content-Type"] = json.dumps(data).encode(), "application/json"
+    try:
+        r = fetch(url, timeout=25, data=body, headers=headers)
+    except urllib.error.HTTPError as e:
+        msg = e.read().decode("utf-8", "ignore")
+        try:
+            err = json.loads(msg).get("error") or {}
+            msg = err.get("error_user_msg") or err.get("message") or msg
+            if err.get("code") == 190:
+                msg = "the token is no longer valid (expired or revoked): generate a new one in Meta's app dashboard. " + msg
+        except Exception:
+            pass
+        raise RuntimeError(f"Instagram said {e.code}: {msg[:300]}")
+    return json.loads(r)
+
+def ig_connect(token):
+    """Validate a token against /me, remember who you are, and pull the direct messages once."""
+    token = (token or "").strip()
+    if not token:
+        raise RuntimeError("paste the token first")
+    me = ig_request("/me", {"fields": "id,username,name,account_type"}, token=token)
+    if not me.get("id"):
+        raise RuntimeError("Meta answered without an account id: is that an Instagram user token?")
+    with LOCK:
+        CONFIG["instagram"] = {**(CONFIG.get("instagram") or {}), "token": token, "user_id": str(me["id"]), "username": me.get("username", ""),
+                               "name": me.get("name", ""), "account_type": me.get("account_type", ""), "expires": int(time.time()) + 60 * 86400}
+        save_config()
+    STATE["ig_conv"] = {}
+    n = ig_fetch_dms()
+    return {"ok": True, "username": me.get("username", ""), "name": me.get("name", ""), "account_type": me.get("account_type", ""), "new": n,
+            "error": STATE.get("ig_error")}
+
+def ig_disconnect():
+    with LOCK:
+        CONFIG["instagram"] = {k: v for k, v in (CONFIG.get("instagram") or {}).items() if k == "api"}
+        save_config()
+    STATE["ig_conv"] = {}
+    return {"ok": True}
+
+def ig_refresh_token():
+    """A long-lived token lasts 60 days and can be refreshed once it is older than a day; done when under ten days remain."""
+    token, _, _, expires = ig_cfg()
+    if not token or expires - time.time() > 10 * 86400:
+        return
+    try:
+        r = json.loads(fetch("https://graph.instagram.com/refresh_access_token?" + urlencode({"grant_type": "ig_refresh_token", "access_token": token}), timeout=20))
+        if r.get("access_token"):
+            with LOCK:
+                CONFIG["instagram"].update({"token": r["access_token"], "expires": int(time.time()) + int(r.get("expires_in") or 60 * 86400)})
+                save_config()
+            log("instagram: token refreshed")
+    except Exception as ex:
+        log("instagram: token refresh failed:", ex)
+
+def _ig_links(m):
+    out = []
+    for a in ((m.get("attachments") or {}).get("data") or []):
+        for key in ("image_data", "video_data", "file_data"):
+            u = (a.get(key) or {}).get("url")
+            if u:
+                out.append(u)
+        u = (a.get("payload") or {}).get("url") or a.get("url")
+        if u:
+            out.append(u)
+    out += re.findall(r"https?://\S+", m.get("message") or "")
+    seen, uniq = set(), []
+    for u in out:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return uniq
+
+def ig_fetch_dms():
+    """Your Instagram direct messages into the messages tab: the conversations that changed since last time, their
+    20 most recent messages (all the API hands over). Messages from you are stored as yours."""
+    if not ig_ready():
+        return 0
+    token, my_id, my_name, _ = ig_cfg()
+    ig_refresh_token()
+    try:
+        convs = ig_request("/me/conversations", {"platform": "instagram", "fields": "id,updated_time", "limit": 25}).get("data") or []
+    except Exception as ex:
+        STATE["ig_error"] = str(ex)
+        return 0
+    known = STATE.setdefault("ig_conv", {})
+    n = 0
+    for c in convs:
+        cid, upd = c.get("id"), str(c.get("updated_time") or "")
+        if not cid or known.get(cid) == upd:
+            continue
+        msgs = None
+        for fields in ("messages.limit(20){id,created_time,from,to,message,attachments}", "messages.limit(20){id,created_time,from,to,message}"):
+            try:
+                msgs = ((ig_request("/" + cid, {"fields": fields}).get("messages") or {}).get("data")) or []
+                break
+            except Exception as ex:
+                last = ex
+        if msgs is None:
+            STATE["ig_error"] = str(last)
+            continue
+        for m in msgs:
+            frm = m.get("from") or {}
+            mine = str(frm.get("id")) == my_id
+            tos = [t for t in ((m.get("to") or {}).get("data") or []) if str(t.get("id")) != my_id]
+            other = tos[0] if (mine and tos) else ({} if mine else frm)
+            text = (m.get("message") or "").strip()
+            links = _ig_links(m)
+            body = html.escape(text).replace("\n", "<br>") if text else ""
+            if not text and links:
+                body = "<span class=\"meta\">[shared media]</span>"
+            if not body:
+                continue
+            before = msg_unread()
+            msg_add("me" if mine else "ig", body, sender=frm.get("username") or ("you" if mine else "an Instagram account"), sender_email="",
+                    ext_id="ig:" + str(m.get("id")), ts=iso_ts(m.get("created_time")) or time.time(), links=links,
+                    meta={"html": True, "to": [{"name": t.get("username", ""), "email": ""} for t in tos] if mine else [],
+                          "ig": {"igsid": str(other.get("id") or ""), "username": other.get("username", ""), "conversation": cid}},
+                    read=mine)
+            n += 1 if msg_unread() != before else 0
+        known[cid] = upd
+    STATE["ig_error"] = None
+    STATE["ig_at"] = int(time.time())
+    return n
+
+def ig_send(igsid, text, username=""):
+    """A direct message to someone on Instagram. Meta only allows it within 24 hours of their last message to you."""
+    token, my_id, _, _ = ig_cfg()
+    if not igsid:
+        raise RuntimeError("that conversation has no Instagram id to answer to")
+    r = ig_request(f"/{my_id}/messages", data={"recipient": {"id": str(igsid)}, "message": {"text": text}})
+    return msg_add("me", html.escape(text).replace("\n", "<br>"), ext_id="ig:" + str(r.get("message_id") or r.get("id") or uuid.uuid4().hex),
+                   links=[u for u in re.findall(r"https?://\S+", text) if canon_key(u)],
+                   meta={"html": True, "to": [{"name": username, "email": ""}], "ig": {"igsid": str(igsid), "username": username}})
+
+def ig_status():
+    token, uid, username, expires = ig_cfg()
+    return {"on": bool(token and uid), "username": username, "expires": expires, "at": STATE.get("ig_at"), "error": STATE.get("ig_error")}
+
 # ---------------------------------------------------------------- messages (a box for notes from Claude and from friends)
 
 MSG_LIMIT = 300
@@ -3415,7 +3583,7 @@ def msg_add(channel, body, title="", links=(), sender="", sender_email="", ext_i
     now = int(time.time())
     with tx() as db:
         if ext_id:
-            r = db.execute("SELECT id FROM messages WHERE user_id = ? AND channel IN ('zulip', 'me') AND ext_id = ?", (USER_ID, ext_id)).fetchone()
+            r = db.execute("SELECT id FROM messages WHERE user_id = ? AND channel IN ('zulip', 'ig', 'me') AND ext_id = ?", (USER_ID, ext_id)).fetchone()
             if r:
                 return msg_row(db.execute("SELECT * FROM messages WHERE id = ?", (r["id"],)).fetchone())
         cur = db.execute("INSERT INTO messages (user_id, channel, ext_id, sender, sender_email, title, body, links, ts, read_at, reply_to, meta) "
@@ -3468,7 +3636,8 @@ def msg_payload(include_archived=False):
     msgs = msg_list(include_archived)
     for m in msgs:
         m["links"] = link_titles(m["links"])
-    return {"messages": msgs, "unread": msg_unread(), "zulip": zulip_ready(), "dm_error": STATE.get("dm_error"), "dm_at": STATE.get("dm_at")}
+    return {"messages": msgs, "unread": msg_unread(), "zulip": zulip_ready(), "dm_error": STATE.get("dm_error"), "dm_at": STATE.get("dm_at"),
+            "instagram": ig_status()}
 
 def zulip_fetch_dms():
     """Your direct messages on Zulip (both ways), into the box; the 20 most recent conversations' last 100 messages."""
@@ -3517,6 +3686,10 @@ def msg_send(text, to=(), reply_to=None, title=""):
         with LOCK:
             r = DB.execute("SELECT * FROM messages WHERE id = ? AND user_id = ?", (reply_to, USER_ID)).fetchone()
         parent = msg_row(r) if r else None
+    if parent and parent["channel"] == "ig":
+        return ig_send(parent["meta"].get("ig", {}).get("igsid"), text, parent["sender"])
+    if parent and parent["channel"] == "me" and parent["meta"].get("ig") and not to:
+        return ig_send(parent["meta"]["ig"].get("igsid"), text, parent["meta"]["ig"].get("username", ""))
     emails = [str(e).strip().lower() for e in (to or []) if str(e).strip()]
     if parent and parent["channel"] in ("zulip", "me") and not emails:
         emails = [parent["sender_email"]] if parent["channel"] == "zulip" else [p["email"] for p in parent["meta"].get("to", [])]
@@ -3623,7 +3796,7 @@ def mcp_messages(a):
     out = []
     for m in msgs[:limit]:
         body = strip_html(m["body"], 4000) if m["meta"].get("html") else m["body"]
-        out.append({"id": m["id"], "from": "Claude" if m["channel"] == "claude" else ("you" if m["channel"] == "me" else m["sender"] or "a friend"),
+        out.append({"id": m["id"], "from": "Claude" if m["channel"] == "claude" else ("you" if m["channel"] == "me" else (m["sender"] or "a friend") + (" (Instagram)" if m["channel"] == "ig" else "")),
                     "channel": m["channel"], "to": [p.get("name") or p.get("email") for p in m["meta"].get("to", [])] or None,
                     "title": m["title"], "body": body, "links": m["links"], "read": m["read"], "reply_to": m["reply_to"],
                     "at": datetime.fromtimestamp(m["ts"], timezone.utc).strftime("%Y-%m-%d %H:%M")})
@@ -3997,9 +4170,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(sync_payload())
             if p.path == "/api/inbox":
                 return self._send(inbox_list())
+            if p.path == "/api/ig/status":
+                return self._send(ig_status())
             if p.path == "/api/messages":
                 if q.get("refresh", [""])[0] and zulip_ready() and (STATE.get("dm_at") or 0) < time.time() - 60:
                     zulip_fetch_dms()
+                if q.get("refresh", [""])[0] and ig_ready() and (STATE.get("ig_at") or 0) < time.time() - 60:
+                    ig_fetch_dms()
                 return self._send(msg_payload(bool(q.get("archived", [""])[0])))
             if p.path == "/mcp":
                 return self._send({"error": "this endpoint speaks MCP over POST (Streamable HTTP); add it to Claude Code with: claude mcp add --transport http feedel " + f"http://127.0.0.1:{RUN_PORT}/mcp"}, code=405)
@@ -4170,8 +4347,12 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/messages/update":
                 return self._send(msg_update(int(body.get("id")), body.get("read"), body.get("archived"), body.get("body")))
             if p.path == "/api/messages/refresh":
-                n = zulip_fetch_dms()
-                return self._send({"ok": True, "new": n, "error": STATE.get("dm_error")})
+                n = zulip_fetch_dms() + ig_fetch_dms()
+                return self._send({"ok": True, "new": n, "error": STATE.get("dm_error") or STATE.get("ig_error")})
+            if p.path == "/api/ig/connect":
+                return self._send(ig_connect(str(body.get("token", ""))))
+            if p.path == "/api/ig/disconnect":
+                return self._send(ig_disconnect())
             if p.path == "/api/share":
                 if not isinstance(body.get("item"), dict):
                     return self._send({"error": "nothing to share"}, code=400)

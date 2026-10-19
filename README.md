@@ -116,9 +116,10 @@ Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e
 
 ## Messages: notes from Claude, direct messages from friends
 
-The **messages** tab is a small box with two kinds of mail:
+The **messages** tab is a small box with three kinds of mail:
 
 - **Direct messages** on the group's Zulip, both ways. They are pulled on every refresh (and when you open the tab); *reply* answers as a Zulip direct message, *write to a friend* starts one. Nothing else of Zulip is read here: streams stay in **talk**.
+- **Instagram direct messages**, through Meta's official *Instagram API with Instagram login*. It needs a professional (Creator) account, the "allow access to messages" switch in the Instagram app, and a token generated in a Meta app of your own left in development mode (no review for your own account); the gear has the five steps. feedel pulls the conversations on every refresh and when you open the tab, shows the last 20 messages of each (all Meta hands over) with shared media as links, and replies through the same API, which Meta allows within 24 hours of the other person's last message. The token lasts 60 days and is refreshed while it is in use. Nothing here touches instagram.com itself.
 - **Notes from Claude.** feedel is an [MCP](https://modelcontextprotocol.io) server at `http://127.0.0.1:8765/mcp` (the port you run it on). Add it to Claude Code once:
 
   ```bash

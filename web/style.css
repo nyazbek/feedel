@@ -307,3 +307,7 @@ article.digest .desc span{display:block;color:var(--mut)}
 .mreply textarea{margin-top:10px}
 pre.cmd{font:13px/1.5 ui-monospace,Consolas,monospace;background:var(--soft);border-radius:var(--r2);padding:8px 12px;margin:4px 0 8px;user-select:all;overflow:auto}
 #settings code{font:12.5px ui-monospace,Consolas,monospace;background:var(--soft);padding:1px 5px;border-radius:var(--r2)}
+.steps-box{margin:4px 0 10px}
+.steps-box summary{cursor:pointer}
+.steps-box .steps{font-size:13.5px}
+.steps-box p{margin:8px 0 0}
