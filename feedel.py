@@ -93,6 +93,8 @@ DEFAULT_CONFIG = {
     # "recs_stream": where recommendations between friends go; a message there mentioning you is a recommendation for you
     # your Instagram direct messages, through Meta's API with Instagram login (a professional account and a token from the app dashboard)
     "instagram": {"token": "", "user_id": "", "username": "", "expires": 0},
+    # "take to claude": a new conversation on claude.ai with the item in the prompt; {q} is the URL-encoded prompt
+    "claude_url": "https://claude.ai/new?q={q}",
     "zulip": {"site": "", "email": "", "api_key": "", "stream": "feedel", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
               "extra_streams": [], "recs_stream": "recommendations",
               # "invite": a reusable invitation link to the group's Zulip; "organizer": whom a friend writes to for access
@@ -4454,6 +4456,18 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/inbox/remove":
                 inbox_remove(str(body.get("url", "")))
                 return self._send({"ok": True})
+            if p.path == "/api/claude":  # "take to claude": open a new conversation with the item's content as the prompt
+                prompt = str(body.get("prompt", "")).strip()
+                if not prompt:
+                    return self._send({"error": "nothing to take"}, code=400)
+                url = (CONFIG.get("claude_url") or "https://claude.ai/new?q={q}").replace("{q}", urllib.parse.quote(prompt[:6000], safe=""))
+                b = browser_for_the_rest()
+                if b:
+                    subprocess.Popen([b, url])
+                else:
+                    import webbrowser
+                    webbrowser.open(url)
+                return self._send({"ok": True, "browser": os.path.basename(b) if b else "default"})
             if p.path == "/api/messages/send":
                 return self._send(msg_send(str(body.get("text", "")), body.get("to") or [], body.get("reply_to"), str(body.get("title", ""))))
             if p.path == "/api/messages/update":

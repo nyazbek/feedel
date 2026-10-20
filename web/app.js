@@ -564,7 +564,7 @@ function article(i) {
   const sn = seen.has(i.id), sv = saved.has(i.id);
   const tags = (i.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
   // primary actions stay visible; the rest fade in when the item is hovered or focused, so the list reads as text
-  const saveBtn = `<button data-a="save">${sv ? 'unsave' : 'save'}</button><button data-a="copy" class="sec">copy link</button><button data-a="share" class="sec">share</button>`;
+  const saveBtn = `<button data-a="save">${sv ? 'unsave' : 'save'}</button><button data-a="copy" class="sec">copy link</button><button data-a="share" class="sec">share</button>${['arxiv', 'tw', 'rss'].includes(i.kind) ? `<button data-a="claude" class="${i.kind === 'arxiv' ? '' : 'sec'}" title="a new conversation on claude.ai with this in the prompt">take to claude</button>` : ''}`;
   const seenBtn = `<button data-a="seen" class="sec">${sn ? 'unmark' : 'mark seen'}</button>`;
   const cls = `${i.kind}${sn ? ' seen' : ''}`;
   if (i.kind === 'yt') {
@@ -1265,6 +1265,38 @@ document.addEventListener('change', async e => {
   catch (err) { toast(err.message); cb.checked = !cb.checked; }
 });
 
+/* ------------------------------------------------------------ "take to claude": the item as the opening prompt of a new conversation */
+
+function claudePrompt(i) {
+  const L = [];
+  const ctx = (c, what) => c ? [`${what} ${c.name || '@' + c.user} (@${c.user}): "${c.text}"`] : [];
+  if (i.kind === 'arxiv') {
+    L.push("I'd like to discuss this paper from my arXiv feed.", '', `Title: ${i.title}`, `Authors: ${(i.authors || []).join(', ')}`, `arXiv: ${i.link}`);
+    if (i.primary) L.push(`Categories: ${[i.primary].concat((i.cats || []).filter(c => c !== i.primary)).join(', ')}`);
+    if (i.desc) L.push('', 'Abstract:', i.desc);
+    L.push('', "Read the paper if you can reach it rather than working from the abstract alone. Start with a short map: the main claim, the method, what is new relative to the obvious prior work, and the two or three things you'd want checked before trusting it. Then let's talk; I'll say what I want to dig into. Answer in the language I write in.");
+  } else if (i.kind === 'tw') {
+    const text = (i.title || '').replace(/^RT by @\w+: /, '').replace(/^R to @\w+: /, '');
+    L.push(`A post on X by ${i.author} that I'd like to think through with you (${i.link}):`, '', `"${text}"`);
+    L.push(...ctx(i.parent, i.parent && i.parent.user === (i.author || '').replace(/^@/, '').toLowerCase() ? 'Earlier post in the same thread by' : 'It replies to'));
+    L.push(...ctx(i.quote, 'It quotes'));
+    L.push('', "What is the claim, what is it reacting to, and what would I need to check before taking it at face value? Keep it short, then let's discuss. Answer in the language I write in.");
+  } else {
+    L.push(`A post I found through my feed that I'd like to discuss: "${i.title}"${i.by || i.author ? ` by ${i.by || i.author}` : ''}`, i.link);
+    if (i.desc) L.push('', i.desc);
+    L.push('', "Read it if you can reach it. Give me a short summary, its strongest point and its weakest one, then let's discuss. Answer in the language I write in.");
+  }
+  return L.filter(x => x !== undefined && x !== null).join('\n');
+}
+async function takeToClaude(id) {
+  const it = findItem(id); if (!it) return;
+  const prompt = claudePrompt(it);
+  let copied = false;
+  try { await navigator.clipboard.writeText(prompt); copied = true; } catch (e) { /* no clipboard in this window: the URL still carries the prompt */ }
+  try { await api('/api/claude', { prompt }); toast(copied ? 'opening a conversation on claude.ai · the prompt is on your clipboard too, in case the box comes up empty' : 'opening a conversation on claude.ai', 5000); }
+  catch (e) { toast(e.message, 5000); }
+}
+
 /* ------------------------------------------------------------ events */
 
 document.addEventListener('click', async e => {
@@ -1369,6 +1401,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'twthread-back') { const box = art.querySelector('.twthread'); const prev = box && box._stack.pop(); if (prev) openTwThread(art, prev, false, box._stack); return; }
   if (b.dataset.a === 'tw-play') { try { toast(await api('/api/play_url', { url: b.dataset.url })); } catch (err) { toast(err.message); } return; }
   if (b.dataset.a === 'share') { openShare(art); return; }
+  if (b.dataset.a === 'claude') { takeToClaude(id); return; }
   if (b.dataset.a === 'share-send') { sendShare(art); return; }
   if (b.dataset.a === 'share-rec') { showPeople(art.querySelector('.share')); return; }
   if (b.dataset.a === 'share-send-rec') { sendShare(art, true); return; }

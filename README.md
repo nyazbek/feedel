@@ -110,6 +110,10 @@ The conversation lives in Zulip, not in feedel (see [ROADMAP.md](ROADMAP.md)). E
 
 Setup, once, under the gear: your Zulip site (`yourgroup.zulipchat.com`), your e-mail, your personal API key (in Zulip: *Settings → Account & privacy → API key*), and the stream to post to (default `feedel`; create it in Zulip first). *Test connection* confirms it. Below that, each kind can go to its own stream, videos to `#vids`, papers to `#papers` and so on; the share box shows the target and lets you pick another. feedel reads every stream named there, so discussions are found wherever they live, and the **talk** tab can show further streams you list, comma-separated. The key is stored in your `feedel.db` and never shown back on the page.
 
+## Take to Claude
+
+Papers, posts on X and blog posts have a **take to claude** action: it opens a new conversation on claude.ai with the item as the opening prompt (title, authors, abstract and link for a paper; the text with the post it replies to or quotes for X; title, summary and link for a post), asking for a short map of it first and then a discussion. The conversation opens in your normal browser; the prompt is copied to the clipboard as well, in case the box comes up empty. `claude_url` in the settings table changes where it goes (`{q}` is the encoded prompt).
+
 ## Library
 
 *Save* on anything puts it in the library, where it stays after it has left the feed. Each saved item takes **tags** and a **note**; the library filters by kind and tag and searches titles, authors, abstracts and notes. Seen and saved state live in `feedel.db`.
