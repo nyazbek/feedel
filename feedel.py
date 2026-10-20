@@ -2729,7 +2729,7 @@ def clipboard_loop():
         for url in URL_RE.findall(t)[:5]:
             url = url.rstrip(".,;:!?")
             k = link_kind(url)
-            if not k or (k == "page" and not CONFIG["ui"].get("clipboard_any")) or url in seen:
+            if not k or (not feedel_opens(url) and not CONFIG["ui"].get("clipboard_any")) or url in seen:
                 continue
             seen.add(url)
             threading.Thread(target=lambda u=url: _safe_take(u, "clipboard"), daemon=True).start()
@@ -2795,11 +2795,25 @@ def browser_for_the_rest():
             return p
     return None
 
-def open_link_cli(url):
-    """`feedel --open URL`: a video, post, paper or page link goes to the inbox and the page opens on it;
-    anything else goes to the normal browser. This is what makes feedel usable as the system's link handler."""
+def feedel_opens(url):
+    """Which links the link handler keeps for feedel: YouTube, X, arXiv, Instagram reels, Substack, and posts on
+    the site of any newsletter or blog you follow. Everything else is for the normal browser."""
     k = link_kind(url)
     if k in ("yt", "tw", "arxiv", "ig"):
+        return True
+    if k != "page":
+        return False
+    host = re.sub(r"^(www|m)\.", "", urlparse(url if "://" in url else "https://" + url).netloc.lower())
+    if host.endswith(".substack.com"):
+        return True
+    with LOCK:
+        feeds = {re.sub(r"^(www|m)\.", "", urlparse(s.get("id") or s.get("ref") or "").netloc.lower()) for s in sub_list("rss")}
+    return bool(host) and host in feeds
+
+def open_link_cli(url):
+    """`feedel --open URL`: a video, post, paper, reel or newsletter link goes to the inbox and the page opens on
+    it; anything else goes to the normal browser. This is what makes feedel usable as the system's link handler."""
+    if feedel_opens(url):
         import webbrowser
         target = f"http://localhost:{PORT}/open?" + urlencode({"u": url})
         import socket
