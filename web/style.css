@@ -357,3 +357,13 @@ body.compact .twpost .tweet:not(.open){display:-webkit-box;-webkit-line-clamp:2;
 .inthread .inposts{display:none;margin:4px 0 0 10px;padding-left:12px;border-left:2px solid var(--line)}
 .inthread.open .inposts{display:block}
 article.folded .inthread,body.compact article:not(.unfolded) .inthread{display:none}
+
+/* the settings panel: one section at a time */
+.stabs{display:flex;flex-wrap:wrap;gap:4px;margin:-4px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.stabs button{font-size:13px;padding:5px 12px;border-radius:var(--pill);color:var(--mut);border:1px solid transparent}
+.stabs button:hover{color:var(--fg);background:var(--hover)}
+.stabs button.on{color:var(--fg);background:var(--card);border-color:var(--line2);font-weight:500}
+#settings section.st h2.sub{margin:4px 0 10px}
+#settings section.st h2.sub + h2.sub,#settings section.st p + h2.sub,#settings section.st .row + h2.sub{margin-top:18px}
+#settings .stfoot{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+#settings section.st > h2.sub:first-child{border-top:none;padding-top:0;margin-top:0}

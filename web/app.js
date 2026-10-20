@@ -804,6 +804,11 @@ function toggleFold(art) {
   art.classList.toggle('folded', next === 'folded'); art.classList.toggle('unfolded', next === 'unfolded');
   const b = art.querySelector('button.foldbtn'); if (b) b.textContent = isFolded(art) ? '▸' : '▾';
 }
+function showSettingsTab(name) {
+  document.querySelectorAll('#settings .stabs button').forEach(x => x.classList.toggle('on', x.dataset.st === name));
+  document.querySelectorAll('#settings section.st').forEach(x => x.hidden = x.dataset.st !== name);
+  try { localStorage.setItem('settingstab', name); } catch (e) { /* ignore */ }
+}
 function setCompact(on) {
   const was = document.body.classList.contains('compact');
   document.body.classList.toggle('compact', on);
@@ -1413,6 +1418,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.v) { view = b.dataset.v; location.hash = view === 'feed' ? '' : view; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
   if (b.id && b.id.startsWith('fr-')) { friendsClick(b); return; }
   if (b.id === 'compact') { setCompact(!document.body.classList.contains('compact')); return; }
+  if (b.dataset.st) { showSettingsTab(b.dataset.st); return; }
   if ((b.id && b.id.startsWith('msg-')) || (b.dataset.a && b.dataset.a.startsWith('msg-'))) { msgClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
@@ -1616,6 +1622,7 @@ document.addEventListener('keydown', e => {
 });
 
 try { setCompact(localStorage.getItem('compact') === '1'); } catch (e) { /* ignore */ }
+try { showSettingsTab(localStorage.getItem('settingstab') || 'feed'); } catch (e) { /* ignore */ }
 let theme = null; try { theme = localStorage.getItem('theme'); } catch (e) { /* ignore */ }
 applyTheme(theme);
 $('#addhint').textContent = HINTS.yt;

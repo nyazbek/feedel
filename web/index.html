@@ -51,67 +51,105 @@
 </div>
 
 <div id="settings" class="panel" hidden>
-  <div class="grid2">
-    <label><input type="checkbox" id="s_hide_thumbnails"> hide thumbnails</label>
-    <label><input type="checkbox" id="s_calm_titles"> calm titles (no SHOUTING, one “!” at most)</label>
-    <label><input type="checkbox" id="s_hide_seen"> hide what I've already seen</label>
-    <label><input type="checkbox" id="s_hide_shorts"> hide Shorts from the feed (a Short you open yourself still shows)</label>
-    <label>skip videos shorter than <input type="number" id="s_min_minutes" min="0" class="num"> min</label>
-    <label>at most <input type="number" id="s_max_per_channel" min="0" class="num"> items per source (0 = no cap)</label>
-    <label><input type="checkbox" id="s_watch_clipboard"> watch the clipboard: links I copy (WhatsApp, mail, anywhere) land in the inbox</label>
-    <label><input type="checkbox" id="s_clipboard_any"> …including links to ordinary pages, not only YouTube, X and arXiv</label>
-    <label><input type="checkbox" id="s_window"> open in its own window, not a browser tab (closing it hides it to the tray) <span class="meta" id="s_window_note"></span></label>
+  <div class="stabs">
+    <button data-st="feed" class="on">feed</button>
+    <button data-st="links">links &amp; window</button>
+    <button data-st="zulip">Zulip</button>
+    <button data-st="instagram">Instagram</button>
+    <button data-st="claude">Claude</button>
+    <button data-st="updates">updates</button>
   </div>
-  <label class="block">when feedel is the link handler, send the links it cannot show to
-    <input id="s_fallback_browser" placeholder="auto"> <span class="meta" id="s_fallback_auto"></span></label>
-  <label class="block">hide anything whose title contains (one per line; wrap in / / for a regex)
-    <textarea id="s_block_words" rows="3" placeholder="giveaway&#10;reacts to&#10;/\b(top|best) \d+\b/"></textarea></label>
-  <h2 class="sub">Zulip <span class="meta">— where the conversation lives. “share” posts an item and your note there, as you; the <b>talk</b> tab reads it back.</span></h2>
-  <div class="grid2">
-    <label>site <input id="z_site" placeholder="yourgroup.zulipchat.com"></label>
-    <label>share to stream <input id="z_stream" placeholder="feedel"></label>
-    <label>your e-mail <input id="z_email" placeholder="you@example.com"></label>
-    <label>API key <input id="z_key" type="password" placeholder="Zulip → settings → account → API key" autocomplete="off"></label>
-  </div>
-  <div class="grid2 streams">
-    <label>videos go to # <input id="z_s_yt" placeholder="(default stream)"></label>
-    <label>papers go to # <input id="z_s_arxiv" placeholder="(default stream)"></label>
-    <label>posts go to # <input id="z_s_rss" placeholder="(default stream)"></label>
-    <label>tweets go to # <input id="z_s_tw" placeholder="(default stream)"></label>
-    <label>recommendations go to # <input id="z_recs" placeholder="recommendations"></label>
-  </div>
-  <label class="block">other streams to show in <b>talk</b> (comma-separated; the share streams above are always there)
-    <input id="z_extra" placeholder="general, reading-group"></label>
-  <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
-  <div class="row"><b>Claude Code</b><span class="meta" id="cl_state">…</span><button id="cl_mcp" class="solid">connect</button><button id="cl_mcp_off" class="link" hidden>disconnect</button></div>
-  <p class="meta">connected, Claude Code can read your feed, library and friends' discussions, put links in your inbox and leave you notes in <b>messages</b>. this feedel is an MCP server at <code id="mcp_url">http://127.0.0.1:8765/mcp</code> (by hand: <code id="mcp_cmd">claude mcp add --transport http feedel http://127.0.0.1:8765/mcp</code>).</p>
-  <div class="row"><b>daily briefing</b><label><input type="checkbox" id="br_on"> on</label><label>at <input id="br_time" class="num" style="width:68px" placeholder="08:00"></label>
-    <select id="br_days"><option value="daily">every day</option><option value="weekdays">weekdays</option></select><span class="meta" id="br_last"></span></div>
-  <div class="grid2">
-    <label>your name <input id="br_name" placeholder="how Claude should refer to you"></label>
-    <label>language <input id="br_language" placeholder="Spanish (rioplatense, vos), English…"></label>
-  </div>
-  <label class="block">what you work on — papers and posts are recommended only from here (topics in, topics out, authors to always include)
-    <textarea id="br_profile" rows="3" placeholder="e.g. T-duality, double field theory, α' corrections… Out: amplitudes, cosmology. Always: Hohm, Zwiebach…"></textarea></label>
-  <label class="block">anything else Claude should keep in mind <textarea id="br_extra" rows="2" placeholder="optional"></textarea></label>
-  <div class="row"><button id="br_save" class="solid">save briefing</button><button id="br_run" class="link">run now</button><button id="br_prompt" class="link">see the prompt</button><button id="br_task" class="link">also install it as a Claude Code scheduled task</button></div>
-  <p class="meta">feedel runs it itself at that time through Claude Code (headless; Claude Code must be logged in: <code>claude login</code> once). the scheduled-task option writes the same prompt where Claude Code's own <i>Scheduled</i> list reads it; the time for that one is set there.</p>
-  <div class="row"><b>Updates</b><span class="meta" id="upd_status">…</span><button id="upd_check" class="link">check now</button></div>
-  <div class="row"><label><input type="checkbox" id="s_auto_update"> fetch new builds by itself (they go in at the next start)</label></div>
-  <div class="row"><input id="gh_token" type="password" placeholder="GitHub token, only if the repository is private (fine-grained, Contents: read)" autocomplete="off"><span class="meta" id="gh_token_state"></span></div>
-  <div class="row"><b>Instagram</b><span class="meta" id="ig_status">not connected</span></div>
-  <div class="row"><input id="ig_token" type="password" placeholder="paste the access token from Meta's app dashboard" autocomplete="off"><button id="ig_connect" class="solid">connect</button><button id="ig_disconnect" class="link" hidden>disconnect</button></div>
-  <details class="steps-box"><summary class="meta">how to get the token (one-time, about twenty minutes)</summary>
-    <ol class="steps">
-      <li><b>Make the account professional</b>: in the Instagram app, Settings → Account type and tools → Switch to professional account → <i>Creator</i>. Free and reversible; it only adds a category under your name.</li>
-      <li><b>Allow tools to read your messages</b>: Settings → Messages and story replies → Message controls → Connected tools → <i>Allow access to messages</i>.</li>
-      <li><b>Create a Meta app</b> at <a href="https://developers.facebook.com/apps/" target="_blank" rel="noopener">developers.facebook.com/apps ↗</a>: Create app → use case “Manage messaging and content on Instagram” (or “Other” → type <i>Business</i>). Leave it in <i>development mode</i>: no review is needed for your own account.</li>
-      <li><b>Add the Instagram product</b> → “API setup with Instagram login”. Under <i>Generate access tokens</i>, add your Instagram account (you log in there) and accept the tester invite in Instagram: Settings → Website permissions → Tester invites (or <a href="https://www.instagram.com/accounts/manage_access/" target="_blank" rel="noopener">instagram.com/accounts/manage_access ↗</a>).</li>
-      <li><b>Generate the token</b> with the permissions <code>instagram_business_basic</code> and <code>instagram_business_manage_messages</code>, copy it, paste it above and press connect. It lasts 60 days; feedel refreshes it by itself while it is used.</li>
-    </ol>
-    <p class="meta">What Meta hands over: your conversations, the last 20 messages of each, and shared media as a link. Replies are allowed within 24 hours of the other person's last message; later ones are refused by Meta, not by feedel.</p>
-  </details>
-  <div class="row"><button id="s_save" class="solid">save</button><span class="meta">per-source overrides live in the following tab</span>
+
+  <section class="st" data-st="feed">
+    <h2 class="sub">What the feed shows</h2>
+    <div class="grid2">
+      <label><input type="checkbox" id="s_hide_thumbnails"> hide thumbnails</label>
+      <label><input type="checkbox" id="s_calm_titles"> calm titles (no SHOUTING, one “!” at most)</label>
+      <label><input type="checkbox" id="s_hide_seen"> hide what I've already seen</label>
+      <label><input type="checkbox" id="s_hide_shorts"> hide Shorts from the feed (a Short you open yourself still shows)</label>
+      <label>skip videos shorter than <input type="number" id="s_min_minutes" min="0" class="num"> min</label>
+      <label>at most <input type="number" id="s_max_per_channel" min="0" class="num"> items per source (0 = no cap)</label>
+    </div>
+    <label class="block">hide anything whose title contains (one per line; wrap in / / for a regex)
+      <textarea id="s_block_words" rows="3" placeholder="giveaway&#10;reacts to&#10;/\b(top|best) \d+\b/"></textarea></label>
+    <p class="meta">per-source settings (tags, minimum length, mute, a note on why you follow it) live in the <b>following</b> tab.</p>
+  </section>
+
+  <section class="st" data-st="links" hidden>
+    <h2 class="sub">Links from elsewhere, and the window</h2>
+    <div class="grid2">
+      <label><input type="checkbox" id="s_watch_clipboard"> watch the clipboard: links I copy (WhatsApp, mail, anywhere) land in the inbox</label>
+      <label><input type="checkbox" id="s_clipboard_any"> …including links to ordinary pages, not only YouTube, X, arXiv, Instagram and newsletters</label>
+      <label><input type="checkbox" id="s_window"> open in its own window, not a browser tab (closing it hides it to the tray) <span class="meta" id="s_window_note"></span></label>
+    </div>
+    <label class="block">when feedel is the link handler, send the links it cannot show to
+      <input id="s_fallback_browser" placeholder="auto"> <span class="meta" id="s_fallback_auto"></span></label>
+    <p class="meta">to make feedel the link handler on Windows, run <code>feedel --register-handler</code> once and pick feedel under Settings → Apps → Default apps → Web browser; YouTube, X, arXiv, Instagram reels, Substack and the newsletters you follow then open here, everything else in the browser above.</p>
+  </section>
+
+  <section class="st" data-st="zulip" hidden>
+    <h2 class="sub">Zulip <span class="meta">— where the conversation lives. “share” posts an item and your note there, as you; the <b>talk</b> tab reads it back.</span></h2>
+    <div class="grid2">
+      <label>site <input id="z_site" placeholder="yourgroup.zulipchat.com"></label>
+      <label>share to stream <input id="z_stream" placeholder="feedel"></label>
+      <label>your e-mail <input id="z_email" placeholder="you@example.com"></label>
+      <label>API key <input id="z_key" type="password" placeholder="Zulip → settings → account → API key" autocomplete="off"></label>
+    </div>
+    <div class="grid2 streams">
+      <label>videos go to # <input id="z_s_yt" placeholder="(default stream)"></label>
+      <label>papers go to # <input id="z_s_arxiv" placeholder="(default stream)"></label>
+      <label>posts go to # <input id="z_s_rss" placeholder="(default stream)"></label>
+      <label>tweets go to # <input id="z_s_tw" placeholder="(default stream)"></label>
+      <label>recommendations go to # <input id="z_recs" placeholder="recommendations"></label>
+    </div>
+    <label class="block">other streams to show in <b>talk</b> (comma-separated; the share streams above are always there)
+      <input id="z_extra" placeholder="general, reading-group"></label>
+    <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
+    <p class="meta">invitations, setup codes and joining a friend's group are in the <b>friends</b> tab.</p>
+  </section>
+
+  <section class="st" data-st="instagram" hidden>
+    <h2 class="sub">Instagram <span class="meta">— your direct messages, through Meta's official API, into the <b>messages</b> tab</span></h2>
+    <div class="row"><span class="meta" id="ig_status">not connected</span></div>
+    <div class="row"><input id="ig_token" type="password" placeholder="paste the access token from Meta's app dashboard" autocomplete="off"><button id="ig_connect" class="solid">connect</button><button id="ig_disconnect" class="link" hidden>disconnect</button></div>
+    <details class="steps-box"><summary class="meta">how to get the token (one-time, about twenty minutes)</summary>
+      <ol class="steps">
+        <li><b>Make the account professional</b>: in the Instagram app, Settings → Account type and tools → Switch to professional account → <i>Creator</i>. Free and reversible; it only adds a category under your name.</li>
+        <li><b>Allow tools to read your messages</b>: Settings → Messages and story replies → Message controls → Connected tools → <i>Allow access to messages</i>.</li>
+        <li><b>Create a Meta app</b> at <a href="https://developers.facebook.com/apps/" target="_blank" rel="noopener">developers.facebook.com/apps ↗</a>: Create app → use case “Manage messaging and content on Instagram” (or “Other” → type <i>Business</i>). Leave it in <i>development mode</i>: no review is needed for your own account.</li>
+        <li><b>Add the Instagram product</b> → “API setup with Instagram login”. Under <i>Generate access tokens</i>, add your Instagram account (you log in there) and accept the tester invite in Instagram: Settings → Website permissions → Tester invites (or <a href="https://www.instagram.com/accounts/manage_access/" target="_blank" rel="noopener">instagram.com/accounts/manage_access ↗</a>).</li>
+        <li><b>Generate the token</b> with the permissions <code>instagram_business_basic</code> and <code>instagram_business_manage_messages</code>, copy it, paste it above and press connect. It lasts 60 days; feedel refreshes it by itself while it is used.</li>
+      </ol>
+      <p class="meta">What Meta hands over: your conversations, the last 20 messages of each, and shared media as a link. Replies are allowed within 24 hours of the other person's last message; later ones are refused by Meta, not by feedel.</p>
+    </details>
+  </section>
+
+  <section class="st" data-st="claude" hidden>
+    <h2 class="sub">Claude Code <span class="meta">— reads your feed, library and friends' discussions, and leaves you notes in <b>messages</b></span></h2>
+    <div class="row"><span class="meta" id="cl_state">…</span><button id="cl_mcp" class="solid">connect</button><button id="cl_mcp_off" class="link" hidden>disconnect</button></div>
+    <p class="meta">this feedel is an MCP server at <code id="mcp_url">http://127.0.0.1:8765/mcp</code> (by hand: <code id="mcp_cmd">claude mcp add --transport http feedel http://127.0.0.1:8765/mcp</code>).</p>
+    <h2 class="sub">Daily briefing <span class="meta">— a note with the few things worth your time, papers from your area, open discussions, and the tasks you did not tick</span></h2>
+    <div class="row"><label><input type="checkbox" id="br_on"> on</label><label>at <input id="br_time" class="num" style="width:68px" placeholder="08:00"></label>
+      <select id="br_days"><option value="daily">every day</option><option value="weekdays">weekdays</option></select><span class="meta" id="br_last"></span></div>
+    <div class="grid2">
+      <label>your name <input id="br_name" placeholder="how Claude should refer to you"></label>
+      <label>language <input id="br_language" placeholder="Spanish (rioplatense, vos), English…"></label>
+    </div>
+    <label class="block">what you work on — papers and posts are recommended only from here (topics in, topics out, authors to always include)
+      <textarea id="br_profile" rows="3" placeholder="e.g. T-duality, double field theory, α' corrections… Out: amplitudes, cosmology. Always: Hohm, Zwiebach…"></textarea></label>
+    <label class="block">anything else Claude should keep in mind <textarea id="br_extra" rows="2" placeholder="optional"></textarea></label>
+    <div class="row"><button id="br_save" class="solid">save briefing</button><button id="br_run" class="link">run now</button><button id="br_prompt" class="link">see the prompt</button><button id="br_task" class="link">also install it as a Claude Code scheduled task</button></div>
+    <p class="meta">feedel runs it itself at that time through Claude Code (headless; Claude Code must be logged in: <code>claude login</code> once). the scheduled-task option writes the same prompt where Claude Code's own <i>Scheduled</i> list reads it; the time for that one is set there.</p>
+  </section>
+
+  <section class="st" data-st="updates" hidden>
+    <h2 class="sub">Updates <span class="meta">— every push to the repository's main becomes a build; this copy fetches it and swaps it in at the next start</span></h2>
+    <div class="row"><span class="meta" id="upd_status">…</span><button id="upd_check" class="link">check now</button></div>
+    <div class="row"><label><input type="checkbox" id="s_auto_update"> fetch new builds by itself (they go in at the next start)</label></div>
+    <div class="row"><input id="gh_token" type="password" placeholder="GitHub token, only if the repository is private (fine-grained, Contents: read)" autocomplete="off"><span class="meta" id="gh_token_state"></span></div>
+  </section>
+
+  <div class="row stfoot"><button id="s_save" class="solid">save</button><span class="meta" id="s_saved"></span>
     <span class="grow"></span><button id="quit" class="link">quit feedel</button></div>
 </div>
 

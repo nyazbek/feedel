@@ -144,7 +144,7 @@ Long posts and summaries fold to a few lines with a *more* / *less* button. Ever
 
 ## Settings (the gear)
 
-Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, hide Shorts from the feed, minimum video length, a per-source cap so one prolific channel cannot drown the rest, block words (`/regex/` allowed), and whether feedel opens in its own window. The theme button cycles auto / light / dark.
+Six tabs: **feed** (thumbnails, calm titles, hide seen, hide Shorts, minimum video length, a per-source cap, block words with `/regex/` allowed), **links & window** (clipboard watcher, the browser for links feedel cannot show, its own window), **Zulip**, **Instagram**, **Claude** (the MCP connection and the daily briefing) and **updates**. The theme button cycles auto / light / dark.
 
 ## Its own window
 
