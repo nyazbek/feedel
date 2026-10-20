@@ -16,6 +16,7 @@ The person reads deliberately: they follow a small set of channels, accounts, bl
 3. **Choose.** Pick two to five items, no more: a long video from a channel they follow is worth more than ten posts; a paper matching a saved paper's topic is worth more than a new category listing; a discussion a friend opened about something in the feed is always worth mentioning. Prefer what connects to their library. Skip anything that is only hype.
 4. **Write the note** with `send_message`:
    - `title`: the date, e.g. `Sunday 18 Oct` (or in the person's language if their replies are in Spanish).
+   - `### papers` (only when at least one paper passed the rule above): title, authors, one line why.
    - `body` in Markdown, under 200 words:
      - one opening line with the shape of the day (how much is new, in which kinds);
      - `### para hoy` / `### for today`: the picks as task lines `- [ ] watch … (20 min) — why`, each with its link in the `links` field, not inline;
@@ -24,6 +25,12 @@ The person reads deliberately: they follow a small set of channels, accounts, bl
      - one closing line if there is something to decide or reply to.
    - `links`: the URLs of every item you mention, in the order mentioned, so the app shows them as cards.
 5. **Do not** mark anything seen or saved, and do not add links to the inbox, unless the person asked for exactly that.
+
+## Papers: only the person's area
+
+A category watch like `cat:hep-th` is far too wide to recommend from. Before choosing papers, build the person's profile from three places: `following` with kind `arxiv` (their author and keyword watches), `library` (saved papers and their notes), and `discussions` (what friends are talking about). Recommend a paper only when it sits in that profile, at most three per briefing, each with one line on which of their topics it touches; when nothing fits, say so in one line rather than padding.
+
+The profile for this repo's owner (adjust yours in the scheduled task's prompt): dualities (T, U, O(d,d), β symmetry), double and exceptional field theory, generalized and exceptional generalized geometry, α' corrections, F-theory and M-theory compactifications, symmetries of 10d/11d supergravity, AdS3 supergravity and BPS solutions. Out unless a friend discusses it or it is in the library: amplitudes, generic holography, cosmology, condensed-matter-flavoured hep-th, machine learning.
 
 ## When run on a schedule
 
