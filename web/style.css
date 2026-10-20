@@ -336,3 +336,13 @@ body.compact article img{width:72px}
 body.compact article.yt{grid-template-columns:72px 1fr}
 body.compact article.tw.withthumb{grid-template-columns:72px 1fr}
 body.compact .acts{margin-top:4px}
+
+/* folding inside thread boxes and context blocks */
+.twpost .tweet.long:not(.open){display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;white-space:normal}
+.twpost button.more{display:none}
+.twpost button.more.always,body.compact .twpost button.more{display:inline-block}
+body.compact .twpost .tweet:not(.open){display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal}
+.ctxt.open{display:block}
+.ctx button.more{font-size:12.5px;margin-top:0}
+.ctx button.src,.twpost .who button.src{padding:0 2px;border-radius:4px;color:var(--fg);font-weight:600}
+.ctx button.src:hover,.twpost .who button.src:hover{background:var(--accbg);color:var(--acc)}

@@ -583,7 +583,7 @@ function article(i) {
     const rt = (i.title || '').match(/^RT by (@\w+): ([\s\S]*)$/), rp = (i.title || '').match(/^R to (@\w+): ([\s\S]*)$/);
     const me = (i.author || '').replace(/^@/, '').toLowerCase();
     // the post being answered, or quoted, sits right above the post: a reply without its context is half a sentence
-    const ctx = (c, label) => c ? `<div class="ctx"><span class="meta">${label} <b>${esc(c.name || '@' + c.user)}</b> @${esc(c.user)}${c.media ? ' · has media' : ''} · <a href="${esc(c.link)}" target="_blank" rel="noopener">${c.ts ? ago(c.ts) + ' ago' : 'open ↗'}</a> · <button class="link" data-a="twgo" data-url="${esc(c.link)}">see it</button></span><div class="ctxt">${esc(c.text)}</div></div>` : '';
+    const ctx = (c, label) => c ? `<div class="ctx"><span class="meta">${label} <button class="src" data-src="tw|${esc(c.user)}" title="their profile">${esc(c.name || '@' + c.user)}</button> @${esc(c.user)}${c.media ? ' · has media' : ''} · <a href="${esc(c.link)}" target="_blank" rel="noopener">${c.ts ? ago(c.ts) + ' ago' : 'open ↗'}</a> · <button class="link" data-a="twgo" data-url="${esc(c.link)}">see it</button></span><div class="ctxt${(c.text || '').length > 300 ? ' long' : ''}">${esc(c.text)}</div>${(c.text || '').length > 300 ? '<button class="more" data-a="more">more</button>' : ''}</div>` : '';
     const context = ctx(i.parent, i.parent && i.parent.user === me ? 'continuing their thread:' : 'replying to') + ctx(i.quote, 'quoting');
     const text = rt ? `<span class="rt">reposted ${esc(rt[1])}</span>${esc(rt[2])}` : rp ? (i.parent ? esc(rp[2]) : `<span class="rt">replying to ${esc(rp[1])}</span>${esc(rp[2])}`) : esc(i.title);
     const threadBtn = `<button data-a="twthread" class="${i.convo || i.reply_to || rp ? '' : 'sec'}">thread</button>`;
@@ -699,8 +699,9 @@ function photos(list) {
 function twPost(t, cls = '', num = '', tag = '') {
   const vid = t.video ? `<button data-a="tw-play" data-url="${esc(t.mp4 || t.link)}">▶ play${t.dur ? ' · ' + dur(t.dur) : ''}</button>` : (t.media && !(t.photos || []).length ? '<span class="meta">has media · </span>' : '');
   const go = cls === 'cur' ? '' : `<button data-a="twgo" data-url="${esc(t.link)}" class="sec">open</button>`;
-  return `<div class="twpost ${cls}"><div class="who">${num ? `<span class="n">${num}</span> ` : ''}<b>${esc(t.name || '@' + t.user)}</b> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a>${tag ? ' · ' + tag : ''}</span></div>
-    <div class="tweet">${esc(t.text)}</div>${photos(t.photos)}${vid || go ? `<div class="acts">${vid}${go}</div>` : ''}</div>`;
+  const long = (t.text || '').length > 420;
+  return `<div class="twpost ${cls}"><div class="who">${num ? `<span class="n">${num}</span> ` : ''}<button class="src" data-src="tw|${esc(t.user)}" title="their profile"><b>${esc(t.name || '@' + t.user)}</b></button> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a>${tag ? ' · ' + tag : ''}</span></div>
+    <div class="tweet${long ? ' long' : ''}">${esc(t.text)}</div><button class="more${long ? ' always' : ''}" data-a="more">more</button>${photos(t.photos)}${vid || go ? `<div class="acts">${vid}${go}</div>` : ''}</div>`;
 }
 const twOpen = new Map();  // article id → {stack, cur}: open X thread boxes survive a re-render of the list
 async function openTwThread(art, url, push, restore) {
@@ -1504,7 +1505,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'abs') { const a = art.querySelector('.abs'); a.hidden = !a.hidden; b.textContent = a.hidden ? 'abstract' : 'hide abstract'; return; }
   if (b.dataset.a === 'citedby' || b.dataset.a === 'refs') { openInspire(art, b.dataset.a === 'refs' ? 'references' : 'citedby'); return; }
   if (b.dataset.a === 'insp-close') { art.querySelector('.inspbox')?.remove(); inspireOpen.delete(id); return; }
-  if (b.dataset.a === 'more') { const t = art.querySelector('.tweet, .desc'); t.classList.toggle('open'); b.textContent = t.classList.contains('open') ? 'less' : 'more'; return; }
+  if (b.dataset.a === 'more') { const box = b.closest('.twpost, .ctx') || art; const t = box.querySelector('.tweet, .desc, .ctxt'); t.classList.toggle('open'); b.textContent = t.classList.contains('open') ? 'less' : 'more'; return; }
   if (b.dataset.a === 'copy') { const it = findItem(id), link = itemLink(it); try { await navigator.clipboard.writeText(link); toast('link copied'); } catch (err) { toast(link, 6000); } return; }
   if (b.dataset.author !== undefined) {
     const a = b.dataset.author, m = art.querySelector('.menu'), mine = (data.arxiv_authors || []).some(x => x.toLowerCase() === a.toLowerCase());
