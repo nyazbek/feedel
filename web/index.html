@@ -82,9 +82,19 @@
   <label class="block">other streams to show in <b>talk</b> (comma-separated; the share streams above are always there)
     <input id="z_extra" placeholder="general, reading-group"></label>
   <div class="row"><button id="z_test" class="link">test connection</button><span class="meta" id="z_status"></span></div>
-  <div class="row"><b>Claude</b><span class="meta">this feedel is an MCP server at <code id="mcp_url">http://127.0.0.1:8765/mcp</code>; in a terminal:</span></div>
-  <pre class="cmd" id="mcp_cmd">claude mcp add --transport http feedel http://127.0.0.1:8765/mcp</pre>
-  <p class="meta">then Claude Code can read your feed, library and friends' discussions and leave you notes in <b>messages</b>. the <code>feedel-briefing</code> skill in the repo writes a daily briefing with tasks.</p>
+  <div class="row"><b>Claude Code</b><span class="meta" id="cl_state">…</span><button id="cl_mcp" class="solid">connect</button><button id="cl_mcp_off" class="link" hidden>disconnect</button></div>
+  <p class="meta">connected, Claude Code can read your feed, library and friends' discussions, put links in your inbox and leave you notes in <b>messages</b>. this feedel is an MCP server at <code id="mcp_url">http://127.0.0.1:8765/mcp</code> (by hand: <code id="mcp_cmd">claude mcp add --transport http feedel http://127.0.0.1:8765/mcp</code>).</p>
+  <div class="row"><b>daily briefing</b><label><input type="checkbox" id="br_on"> on</label><label>at <input id="br_time" class="num" style="width:68px" placeholder="08:00"></label>
+    <select id="br_days"><option value="daily">every day</option><option value="weekdays">weekdays</option></select><span class="meta" id="br_last"></span></div>
+  <div class="grid2">
+    <label>your name <input id="br_name" placeholder="how Claude should refer to you"></label>
+    <label>language <input id="br_language" placeholder="Spanish (rioplatense, vos), English…"></label>
+  </div>
+  <label class="block">what you work on — papers and posts are recommended only from here (topics in, topics out, authors to always include)
+    <textarea id="br_profile" rows="3" placeholder="e.g. T-duality, double field theory, α' corrections… Out: amplitudes, cosmology. Always: Hohm, Zwiebach…"></textarea></label>
+  <label class="block">anything else Claude should keep in mind <textarea id="br_extra" rows="2" placeholder="optional"></textarea></label>
+  <div class="row"><button id="br_save" class="solid">save briefing</button><button id="br_run" class="link">run now</button><button id="br_prompt" class="link">see the prompt</button><button id="br_task" class="link">also install it as a Claude Code scheduled task</button></div>
+  <p class="meta">feedel runs it itself at that time through Claude Code (headless; Claude Code must be logged in: <code>claude login</code> once). the scheduled-task option writes the same prompt where Claude Code's own <i>Scheduled</i> list reads it; the time for that one is set there.</p>
   <div class="row"><b>Updates</b><span class="meta" id="upd_status">…</span><button id="upd_check" class="link">check now</button></div>
   <div class="row"><label><input type="checkbox" id="s_auto_update"> fetch new builds by itself (they go in at the next start)</label></div>
   <div class="row"><input id="gh_token" type="password" placeholder="GitHub token, only if the repository is private (fine-grained, Contents: read)" autocomplete="off"><span class="meta" id="gh_token_state"></span></div>

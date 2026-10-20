@@ -124,7 +124,7 @@ The **messages** tab is a small box with three kinds of mail:
 
 - **Direct messages** on the group's Zulip, both ways. They are pulled on every refresh (and when you open the tab); *reply* answers as a Zulip direct message, *write to a friend* starts one. Nothing else of Zulip is read here: streams stay in **talk**.
 - **Instagram direct messages**, through Meta's official *Instagram API with Instagram login*. It needs a professional (Creator) account, the "allow access to messages" switch in the Instagram app, and a token generated in a Meta app of your own left in development mode (no review for your own account); the gear has the five steps. feedel pulls the conversations on every refresh and when you open the tab, shows the last 20 messages of each (all Meta hands over) with shared media as links, and replies through the same API, which Meta allows within 24 hours of the other person's last message. The token lasts 60 days and is refreshed while it is in use. Nothing here touches instagram.com itself.
-- **Notes from Claude.** feedel is an [MCP](https://modelcontextprotocol.io) server at `http://127.0.0.1:8765/mcp` (the port you run it on). Add it to Claude Code once:
+- **Notes from Claude.** feedel is an [MCP](https://modelcontextprotocol.io) server at `http://127.0.0.1:8765/mcp` (the port you run it on). The gear's *Claude Code* block has a **connect** button that registers it (through the `claude` program, or by editing `~/.claude.json` the same way); by hand it is
 
   ```bash
   claude mcp add --transport http feedel http://127.0.0.1:8765/mcp
@@ -132,7 +132,7 @@ The **messages** tab is a small box with three kinds of mail:
 
   Then Claude can read your feed, library, what you follow and your friends' discussions, search arXiv through feedel, put a link in your inbox and leave you a note (`send_message`). Notes are Markdown; `- [ ] task` lines become checkboxes you can tick, and the links a note mentions show as cards with a *→ inbox* button so a video or post can be played without opening YouTube or X. A reply to a note stays in the box, where Claude reads it the next time it looks (`messages`). Claude never marks anything seen or saved unless you ask.
 
-  The repo ships a skill, `.claude/skills/feedel-briefing`, that writes a daily briefing: the few things worth your time, open discussions, and the tasks you did not tick yesterday, carried over. Run `/feedel-briefing` in Claude Code, or put it on a schedule (Claude Code's scheduled tasks, or a cron that runs `claude -p "/feedel-briefing"` with feedel open).
+  The **daily briefing** is configured under the gear too: on/off, the time, every day or weekdays, your name, the language, what you work on (papers and posts are recommended only from that area) and anything else to keep in mind. feedel runs it itself at that time, headless, through Claude Code (`claude -p` with only feedel's tools allowed; Claude Code must be logged in once with `claude login`), and shows the last run's result. *See the prompt* shows exactly what Claude gets; *run now* tries it; *install it as a Claude Code scheduled task* writes the same prompt where Claude Code's own *Scheduled* list reads it, for those who prefer that scheduler (its time is set there). The repo also ships the skill `.claude/skills/feedel-briefing` for running it by hand with `/feedel-briefing`.
 
   The endpoint only answers requests from this machine (it listens on 127.0.0.1 and refuses other origins). Opening `/mcp` in a browser explains itself.
 

@@ -318,3 +318,4 @@ pre.cmd{font:13px/1.5 ui-monospace,Consolas,monospace;background:var(--soft);bor
 .mbody.html video,.thread .msg video{display:block;max-width:100%;width:420px;max-height:320px;margin:8px 0;border-radius:var(--r2);border:1px solid var(--line);background:#000}
 .mbody.html img,.thread .msg img{max-width:100%}
 .mbody.html .message_inline_image,.thread .msg .message_inline_image{margin:6px 0}
+#br_prompt_box{white-space:pre-wrap;max-height:260px;font-size:12px}

@@ -97,6 +97,8 @@ DEFAULT_CONFIG = {
     "instagram": {"token": "", "user_id": "", "username": "", "expires": 0},
     # "take to claude": a new conversation on claude.ai with the item in the prompt; {q} is the URL-encoded prompt
     "claude_url": "https://claude.ai/new?q={q}",
+    # the daily briefing Claude writes into the messages tab (run by feedel through Claude Code, headless)
+    "briefing": {"on": False, "time": "08:00", "days": "daily", "language": "", "name": "", "profile": "", "extra": "", "model": ""},
     "zulip": {"site": "", "email": "", "api_key": "", "stream": "feedel", "streams": {"yt": "", "tw": "", "rss": "", "arxiv": ""},
               "extra_streams": [], "recs_stream": "recommendations",
               # "invite": a reusable invitation link to the group's Zulip; "organizer": whom a friend writes to for access
@@ -4092,7 +4094,7 @@ def update_check():
     st.update({"remote": remote, "asset_url": asset.get("url") if asset else None, "asset_size": asset.get("size") if asset else None})
     local = st["local"]
     newer = bool(remote["sha"]) and remote["sha"] != local.get("sha") and (not local.get("date") or remote["date"] > local.get("date", ""))
-    st["available"] = newer and (update_mode() != "exe" or asset is not None)
+    st["available"] = newer and update_mode() != "none" and (update_mode() != "exe" or asset is not None)  # a plain source folder is not nagged
     return update_status()
 
 def update_download():
@@ -4191,6 +4193,215 @@ def update_loop():
         except Exception as ex:
             log("update check:", ex)
         time.sleep(6 * 3600)
+
+# ---------------------------------------------------------------- claude (Claude Code: the MCP connection and the daily briefing)
+
+def claude_home():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+
+def claude_cli():
+    """The `claude` command-line program (Claude Code), if installed."""
+    p = find_exe("claude")
+    if p:
+        return p
+    for c in (os.path.join(os.path.expanduser("~"), ".local", "bin", "claude.exe"), os.path.join(os.path.expanduser("~"), ".local", "bin", "claude"),
+              "/usr/local/bin/claude", "/opt/homebrew/bin/claude"):
+        if os.path.isfile(c):
+            return c
+    return None
+
+def mcp_url():
+    return f"http://127.0.0.1:{RUN_PORT}/mcp"
+
+def claude_json_path():
+    return os.path.join(os.path.expanduser("~"), ".claude.json")
+
+def mcp_installed():
+    """Is this feedel registered as the MCP server `feedel` in Claude Code's user config?"""
+    try:
+        with open(claude_json_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        e = (d.get("mcpServers") or {}).get("feedel") or {}
+        return e.get("url") == mcp_url(), e.get("url")
+    except Exception:
+        return False, None
+
+def mcp_install(on=True):
+    """Register (or remove) this feedel as the MCP server `feedel` for Claude Code, user-wide: through the `claude`
+    program when it is there, else by editing ~/.claude.json the way it would."""
+    cli = claude_cli()
+    if cli:
+        cmd = [cli, "mcp", "add", "--transport", "http", "--scope", "user", "feedel", mcp_url()] if on else [cli, "mcp", "remove", "--scope", "user", "feedel"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode == 0 or (not on and "not found" in (r.stderr + r.stdout).lower()):
+                return {"ok": True, "installed": mcp_installed()[0], "how": "claude mcp", "note": (r.stdout or r.stderr).strip()[:200]}
+            note = (r.stderr or r.stdout).strip()[:200]
+        except Exception as ex:
+            note = str(ex)[:200]
+    else:
+        note = "the claude program is not installed (Claude Code); the config file was edited directly"
+    path = claude_json_path()
+    try:
+        d = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            shutil.copy2(path, path + ".feedel-backup")
+        servers = d.setdefault("mcpServers", {})
+        if on:
+            servers["feedel"] = {"type": "http", "url": mcp_url()}
+        else:
+            servers.pop("feedel", None)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2)
+        os.replace(tmp, path)
+        return {"ok": True, "installed": mcp_installed()[0], "how": "config file", "note": note}
+    except Exception as ex:
+        raise RuntimeError(f"could not register with Claude Code: {note}; {ex}")
+
+def briefing_cfg():
+    b = CONFIG.setdefault("briefing", {})
+    for k, v in DEFAULT_CONFIG["briefing"].items():
+        b.setdefault(k, v)
+    return b
+
+def briefing_prompt():
+    """The instructions a run of the briefing gets. Self-contained: the run has no memory of anything else."""
+    b = briefing_cfg()
+    who = (b.get("name") or "").strip()
+    lang = (b.get("language") or "").strip() or "the language the person writes in"
+    profile = (b.get("profile") or "").strip()
+    extra = (b.get("extra") or "").strip()
+    L = [f"Write today's briefing into feedel, {who + chr(39) + 's' if who else 'the person' + chr(39) + 's'} quiet feed reader, as a note in its messages tab. "
+         f"Write it in {lang}, under 200 words.", "",
+         "## How to talk to feedel", "",
+         f"feedel runs on this computer and is an MCP server named `feedel` ({mcp_url()}) with the tools `messages`, `feed`, `library`, "
+         "`discussions`, `following`, `send_message`. Use those tools. If they are not available, call the same tools over plain HTTP "
+         f"(JSON-RPC 2.0): POST to {mcp_url()} a body like "
+         '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"feed","arguments":{"hours":36,"unseen_only":true,"limit":40}}} '
+         "with header Content-Type: application/json; the answer's result.content[0].text is JSON. If feedel does not answer at all, stop and "
+         "report that in one line; do not write the briefing anywhere else.", ""]
+    if profile:
+        L += ["## Papers and posts: only their area", "",
+              f"What {who or 'the person'} works on, in their words: {profile}", "",
+              "A category watch is far too wide to recommend from: recommend a paper only when it sits in that area, at most three per "
+              "briefing, each with one line on which of their topics it touches, newest first; none is fine when nothing fits, say so in one "
+              "line rather than padding. Before choosing, call `library` with an empty query and look at the papers they saved and their notes, "
+              "and `discussions` for what friends are talking about; both refine the area (a saved paper's topic counts as in).", ""]
+    L += ["## Steps", "",
+          "1. Read before writing: `messages` with limit 10. Find your last briefing (sender Claude). Carry over its unticked `- [ ]` tasks "
+          "(at most five, oldest first, marked with the day they came from); if the person replied under it (channel \"me\"), answer each reply "
+          "in one line in the new note. If a note from you with today's date already exists, do not write another: reply to it with "
+          "`send_message` and `reply_to` set to its id, saying only what changed.",
+          "2. Look at the day: `feed` with hours 36 and unseen_only true, once per kind (yt, tw, rss, arxiv; for arxiv use limit 150); "
+          "`library` with limit 10 (their tags and notes show what they care about); `discussions` with limit 20.",
+          "3. Choose two to five items in all, no more. A long video from a channel they follow beats ten posts; a paper in their area beats "
+          "everything else; a discussion a friend opened about something in the feed is always worth a line. Skip hype. Prefer what connects "
+          "to their library.",
+          "4. Write the note with `send_message`: `title` is today's date in that language; `body` in Markdown with one opening line on the "
+          "shape of the day, a `### para hoy` / `### for today` section with the picks as task lines `- [ ] watch … (20 min) — why`, a "
+          "`### papers` section with the papers that passed (title, authors, one line why) or one line saying nothing fit, a "
+          "`### con amigos` / `### with friends` section only if there are open discussions, the carried-over tasks, and one closing line if "
+          "something needs a decision or a reply; `links` holds the URLs of every item mentioned, in the order mentioned.",
+          "5. Never mark anything seen or saved, never add links to the inbox, never use any tool of feedel other than the ones named above."]
+    if extra:
+        L += ["", "## Also", "", extra]
+    return "\n".join(L)
+
+BRIEFING_TOOLS = "mcp__feedel__messages,mcp__feedel__feed,mcp__feedel__library,mcp__feedel__discussions,mcp__feedel__following,mcp__feedel__send_message"
+
+def briefing_run(trigger="by hand"):
+    """Run the briefing now: Claude Code, headless, with only feedel's tools allowed. Blocks until it is done."""
+    cli = claude_cli()
+    b = briefing_cfg()
+    rec = {"at": int(time.time()), "trigger": trigger, "ok": False, "output": ""}
+    if not cli:
+        rec["output"] = "Claude Code is not installed (no `claude` program found)"
+    else:
+        cmd = [cli, "-p", briefing_prompt(), "--allowedTools", BRIEFING_TOOLS, "--output-format", "text"]
+        if (b.get("model") or "").strip():
+            cmd += ["--model", b["model"].strip()]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1500, cwd=HERE, encoding="utf-8", errors="replace")
+            out = (r.stdout or "").strip()
+            err = (r.stderr or "").strip()
+            rec["ok"] = r.returncode == 0 and "Failed to authenticate" not in out + err
+            rec["output"] = (out or err)[-1500:]
+            if "Failed to authenticate" in out + err or "not logged in" in (out + err).lower():
+                rec["output"] = "Claude Code is not logged in: run `claude login` in a terminal once. " + rec["output"]
+        except subprocess.TimeoutExpired:
+            rec["output"] = "the run took more than 25 minutes and was stopped"
+        except Exception as ex:
+            rec["output"] = str(ex)[:500]
+    with LOCK:
+        briefing_cfg()["last_run"] = rec
+        save_config()
+    log(f"briefing ({trigger}): {'ok' if rec['ok'] else 'failed'}: {rec['output'][:120]}")
+    return rec
+
+def briefing_due(now=None):
+    b = briefing_cfg()
+    if not b.get("on"):
+        return False
+    now = now or time.localtime()
+    hh, mm = (b.get("time") or "08:00").split(":")[:2]
+    if (now.tm_hour, now.tm_min) != (int(hh), int(mm)):
+        return False
+    if b.get("days") == "weekdays" and now.tm_wday >= 5:
+        return False
+    last = b.get("last_run") or {}
+    return time.strftime("%Y-%m-%d", time.localtime(last.get("at") or 0)) != time.strftime("%Y-%m-%d", now)
+
+def briefing_loop():
+    """Once a minute: when it is the configured time and today's briefing has not run, run it."""
+    while True:
+        try:
+            if briefing_due():
+                threading.Thread(target=briefing_run, args=("schedule",), daemon=True).start()
+        except Exception as ex:
+            log("briefing loop:", ex)
+        time.sleep(60)
+
+def briefing_task_path():
+    return os.path.join(claude_home(), "scheduled-tasks", "feedel-briefing", "SKILL.md")
+
+def briefing_install_task():
+    """Write the briefing as a Claude Code scheduled task (its prompt file); the time is set in Claude Code's own
+    Scheduled list, which keeps the schedule in its own store."""
+    path = briefing_task_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    desc = "Every morning, write the day's briefing into feedel's messages tab: picks, papers only from the person's area, friends' discussions, carried-over tasks."
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(f"---\nname: feedel-briefing\ndescription: {desc}\n---\n\n{briefing_prompt()}\n")
+    return {"ok": True, "path": path}
+
+def claude_status():
+    installed, url = mcp_installed()
+    b = briefing_cfg()
+    return {"cli": claude_cli(), "mcp_installed": installed, "mcp_url": mcp_url(), "mcp_other_url": url if url and not installed else None,
+            "briefing": {k: b.get(k) for k in ("on", "time", "days", "language", "name", "profile", "extra", "model")},
+            "last_run": b.get("last_run"), "task_file": os.path.exists(briefing_task_path())}
+
+def briefing_update(patch):
+    with LOCK:
+        b = briefing_cfg()
+        if "on" in patch:
+            b["on"] = bool(patch["on"])
+        if "time" in patch:
+            t = str(patch["time"] or "08:00").strip()
+            if not re.fullmatch(r"\d{1,2}:\d{2}", t):
+                raise RuntimeError("the time is HH:MM")
+            hh, mm = t.split(":")
+            b["time"] = f"{int(hh):02d}:{int(mm):02d}"
+        if "days" in patch:
+            b["days"] = "weekdays" if patch["days"] == "weekdays" else "daily"
+        for k in ("language", "name", "profile", "extra", "model"):
+            if k in patch:
+                b[k] = str(patch[k] or "").strip()[:4000]
+        save_config()
+    return claude_status()
 
 # ---------------------------------------------------------------- window (optional: the page in its own window, with a tray icon)
 # `--window`, or the ui.window setting: the page opens in a native window (pywebview: WebView2 on Windows, WebKit on macOS)
@@ -4440,6 +4651,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(sync_payload())
             if p.path == "/api/inbox":
                 return self._send(inbox_list())
+            if p.path == "/api/claude/status":
+                return self._send(claude_status())
+            if p.path == "/api/claude/briefing/prompt":
+                return self._send(briefing_prompt(), "text/plain; charset=utf-8")
             if p.path == "/api/update":
                 if q.get("check", [""])[0]:
                     return self._send(update_check())
@@ -4640,6 +4855,15 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/inbox/remove":
                 inbox_remove(str(body.get("url", "")))
                 return self._send({"ok": True})
+            if p.path == "/api/claude/mcp":
+                return self._send(mcp_install(bool(body.get("on", True))))
+            if p.path == "/api/claude/briefing":
+                return self._send(briefing_update(body))
+            if p.path == "/api/claude/briefing/run":
+                threading.Thread(target=briefing_run, args=("by hand",), daemon=True).start()
+                return self._send({"ok": True, "started": True})
+            if p.path == "/api/claude/briefing/task":
+                return self._send(briefing_install_task())
             if p.path == "/api/update/download":
                 return self._send(update_download())
             if p.path == "/api/update/apply":
@@ -4813,6 +5037,7 @@ if __name__ == "__main__":
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=clipboard_loop, daemon=True).start()
     threading.Thread(target=update_loop, daemon=True).start()
+    threading.Thread(target=briefing_loop, daemon=True).start()
     remember_default_browser()
     log(f"feedel on http://localhost:{port}  (Ctrl+C to stop)")
     if STATE.get("queued_link"):

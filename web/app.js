@@ -868,6 +868,7 @@ function fillSettings() {
   $('#z_recs').value = z.recs_stream || '';
   $('#z_status').textContent = '';
   fillInstagram(s.instagram);
+  fillClaude();
   fillUpdate(s.update);
 }
 async function testZulip() {
@@ -1225,6 +1226,33 @@ async function updateClick(b) {
     catch (e) { $('#update-status').textContent = e.message; b.disabled = false; }
   }
 }
+let claudeSt = null;
+async function fillClaude() {
+  const st = $('#cl_state'); if (!st) return;
+  try { claudeSt = await api('/api/claude/status'); } catch (e) { st.textContent = e.message; return; }
+  const c = claudeSt;
+  st.innerHTML = (c.cli ? '' : '<span class="warn">Claude Code is not installed on this computer · </span>') +
+    (c.mcp_installed ? 'connected: Claude Code knows this feedel as <b>feedel</b>' : c.mcp_other_url ? `registered with another address (${esc(c.mcp_other_url)}) · ` : 'not connected · ');
+  $('#cl_mcp').textContent = c.mcp_installed ? 'reconnect' : 'connect'; $('#cl_mcp_off').hidden = !c.mcp_installed;
+  const b = c.briefing || {};
+  $('#br_on').checked = !!b.on; $('#br_time').value = b.time || '08:00'; $('#br_days').value = b.days || 'daily';
+  $('#br_name').value = b.name || ''; $('#br_language').value = b.language || ''; $('#br_profile').value = b.profile || ''; $('#br_extra').value = b.extra || '';
+  const r = c.last_run;
+  $('#br_last').innerHTML = r ? `last run ${ago(r.at)} ago (${esc(r.trigger)}): ${r.ok ? 'ok' : `<span class="warn">${esc((r.output || 'failed').slice(0, 160))}</span>`}` : (b.on ? 'not run yet' : '');
+  $('#br_task').textContent = c.task_file ? 'update the Claude Code scheduled task' : 'also install it as a Claude Code scheduled task';
+}
+async function claudeClick(b) {
+  const patch = () => ({ on: $('#br_on').checked, time: $('#br_time').value, days: $('#br_days').value, name: $('#br_name').value, language: $('#br_language').value, profile: $('#br_profile').value, extra: $('#br_extra').value });
+  try {
+    if (b.id === 'cl_mcp') { b.disabled = true; const r = await api('/api/claude/mcp', { on: true }); toast(r.installed ? `connected (${r.how})` : 'could not confirm the connection: ' + (r.note || '')); }
+    if (b.id === 'cl_mcp_off') { b.disabled = true; await api('/api/claude/mcp', { on: false }); toast('disconnected'); }
+    if (b.id === 'br_save') { await api('/api/claude/briefing', patch()); toast('briefing saved'); }
+    if (b.id === 'br_run') { await api('/api/claude/briefing', patch()); await api('/api/claude/briefing/run', {}); toast('running… it takes a minute or two; the note lands in messages', 6000); setTimeout(fillClaude, 90000); }
+    if (b.id === 'br_prompt') { await api('/api/claude/briefing', patch()); const t = await api('/api/claude/briefing/prompt'); let box = $('#br_prompt_box'); if (!box) { box = document.createElement('pre'); box.id = 'br_prompt_box'; box.className = 'cmd'; b.closest('.row').after(box); } box.textContent = t; }
+    if (b.id === 'br_task') { await api('/api/claude/briefing', patch()); const r = await api('/api/claude/briefing/task', {}); toast('written: ' + r.path + ' · set its time under Scheduled in Claude Code', 8000); }
+  } catch (e) { toast(e.message, 6000); }
+  finally { b.disabled = false; await fillClaude(); }
+}
 function fillInstagram(ig) {
   ig = ig || {};
   const st = $('#ig_status'); if (!st) return;
@@ -1383,6 +1411,7 @@ document.addEventListener('click', async e => {
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
   if (b.id === 'ig_connect' || b.id === 'ig_disconnect') { igClick(b); return; }
+  if (b.id === 'cl_mcp' || b.id === 'cl_mcp_off' || (b.id && b.id.startsWith('br_'))) { claudeClick(b); return; }
   if (b.id === 'upd_check' || b.id === 'update-go') { updateClick(b); return; }
   if (b.id === 'quit') { if (confirm('stop feedel? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">feedel stopped. start it again to continue.</p></main>'; } return; }
   if (b.id === 'importbtn') { const t = $('#paste').value.trim(); if (t) { importText(t, ''); $('#paste').value = ''; } return; }
