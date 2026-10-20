@@ -4166,8 +4166,11 @@ def cleanup_old_exe():
 def update_apply():
     """Use the new version now: swap the executable, or pull the checkout, then restart."""
     mode = update_mode()
+    st = STATE.get("update") or {}
     if mode == "exe":
         if not swap_pending_exe():
+            if not st.get("available"):
+                raise RuntimeError("this copy is already the latest build")
             update_download()
             swap_pending_exe()
     elif mode == "git":
