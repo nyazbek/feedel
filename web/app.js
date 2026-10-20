@@ -721,9 +721,10 @@ async function openTwThread(art, url, push, restore) {
     if (t.before.length) parts.push(`<div class="thsec">in reply to</div>` + t.before.map(p => twPost(p, 'before')).join(''));
     const posts = t.posts || [t.tweet].concat(t.after || []);
     const idx = t.index == null ? 0 : t.index;
-    if (posts.length > 1) {
-      parts.push(`<div class="thsec">the whole thread · ${posts.length} posts</div>` +
-        posts.map((p, k) => twPost(p, k === idx ? 'cur' : 'after', `${k + 1}/`, k === idx ? 'this post' : '')).join(''));
+    // the article above already shows its own post; a post reached through "see it" / "open" must be shown here
+    if (posts.length > 1 || url) {
+      parts.push(`<div class="thsec">${posts.length > 1 ? `the whole thread · ${posts.length} posts` : 'the post'}</div>` +
+        posts.map((p, k) => twPost(p, k === idx ? 'cur' : 'after', posts.length > 1 ? `${k + 1}/` : '', k === idx && !url ? 'this post' : '')).join(''));
     }
     if (t.replies.length) {
       const others = t.replies.filter(r => r.user !== me);
