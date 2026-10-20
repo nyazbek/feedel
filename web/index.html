@@ -43,6 +43,7 @@
     <dt>m</dt><dd>mark seen, unmark</dd>
     <dt>a / p</dt><dd>a paper's abs page / its pdf, in the browser</dd>
     <dt>c / r</dt><dd>who cites a paper / what it cites (INSPIRE)</dd>
+    <dt>x</dt><dd>fold the item (text, abstract, threads) / unfold it</dd>
     <dt>/</dt><dd>search</dd>
     <dt>Escape</dt><dd>clear the highlight, the search box, this help</dd>
     <dt>?</dt><dd>this help</dd>
@@ -120,6 +121,7 @@
     <span class="grow"></span>
     <input id="feedsearch" placeholder="search" autocomplete="off">
     <span class="meta" id="when"></span>
+    <button id="compact" class="link" title="compact: titles and a couple of lines; 'more' still opens any item, x folds the current one">compact</button>
     <button id="linkbtn" class="link">+ link</button>
     <button id="rf" class="link">refresh</button>
   </div>
@@ -218,6 +220,7 @@
   <div class="bar">
     <span class="meta" id="msg-state">…</span>
     <span class="grow"></span>
+    <button id="msg-foldall" class="link">fold all</button>
     <button id="msg-compose" class="link" hidden>write to a friend</button>
     <button id="msg-refresh" class="link">check now</button>
     <button id="msg-archived" class="link">show archived</button>

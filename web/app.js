@@ -607,7 +607,7 @@ function article(i) {
     return `<article class="${cls}" data-id="${esc(i.id)}"><div>
       <p class="t"><a href="${esc(i.link)}" target="_blank" rel="noopener">${esc(i.title)}</a></p>
       <div class="by">${srcBtn(i)}${i.by && i.by !== i.author ? ' · ' + esc(i.by) : ''} · ${ago(i.ts)} ago${tags}</div>
-      ${i.desc ? `<div class="desc">${esc(i.desc)}</div>` : ''}
+      ${i.desc ? `<div class="desc">${esc(i.desc)}</div>${i.desc.length > 180 ? '<button class="more" data-a="more">more</button>' : ''}` : ''}
       <div class="acts"><a href="${esc(i.link)}" target="_blank" rel="noopener">open ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'follow') {
@@ -787,6 +787,23 @@ function restoreInspire() {
 
 function listRoot() { return view === 'feed' ? $('#list') : view === 'library' ? $('#liblist') : view === 'source' ? $('#srclist') : null; }
 function shownArticles() { const r = listRoot(); return r ? [...r.querySelectorAll('article[data-id]')] : []; }
+function setCompact(on) {
+  document.body.classList.toggle('compact', on);
+  const b = $('#compact'); if (b) b.textContent = on ? 'full' : 'compact';
+  try { localStorage.setItem('compact', on ? '1' : '0'); } catch (e) { /* ignore */ }
+}
+// x: fold the current item (text clamped, abstract hidden, thread boxes closed), or unfold it when it is folded
+function foldCur(art) {
+  const open = art.querySelector('.tweet.open, .desc.open, .abs:not([hidden]), .twthread, .thread');
+  if (open) {
+    art.querySelectorAll('.tweet.open, .desc.open').forEach(t => { t.classList.remove('open'); const m = art.querySelector('button.more'); if (m) m.textContent = 'more'; });
+    const abs = art.querySelector('.abs'); if (abs && !abs.hidden) art.querySelector('[data-a=abs]')?.click();
+    art.querySelectorAll('.twthread, .thread').forEach(t => { if (t.classList.contains('twthread')) twOpen.delete(art.dataset.id); t.remove(); });
+  } else {
+    art.querySelector('button.more')?.click();
+    const abs = art.querySelector('.abs'); if (abs && abs.hidden) art.querySelector('[data-a=abs]')?.click();
+  }
+}
 function curArticle() { return curId ? shownArticles().find(a => a.dataset.id === curId) || null : null; }
 function setCur(art) {
   document.querySelectorAll('article.cur').forEach(a => a.classList.remove('cur'));
@@ -1121,6 +1138,12 @@ async function importFiles(files) {
 /* ------------------------------------------------------------ messages (notes from Claude, direct messages from friends) */
 
 let msgData = null, msgArchived = false, msgPeople = null;
+const msgFolded = new Set(); try { JSON.parse(localStorage.getItem('msgfold') || '[]').forEach(i => msgFolded.add(i)); } catch (e) { /* ignore */ }
+function saveFold() { try { localStorage.setItem('msgfold', JSON.stringify([...msgFolded])); } catch (e) { /* ignore */ } }
+function foldMsg(card, on) {
+  const id = +card.dataset.mid; if (on) msgFolded.add(id); else msgFolded.delete(id); saveFold();
+  card.classList.toggle('folded', on); const c = card.querySelector(':scope > .who .chev'); if (c) c.textContent = on ? '▸' : '▾';
+}
 
 // a small Markdown renderer for Claude's notes: headings, emphasis, code, links, lists, task lists, quotes, paragraphs
 function md(src) {
@@ -1170,9 +1193,12 @@ function msgCard(m) {
   const links = (m.links || []).length ? `<div class="mlinks">${m.links.map(l => `<span class="mlink"><a href="${esc(l.url)}" target="_blank" rel="noopener">${l.kind ? `<span class="k">${esc(l.kind)}</span> ` : ''}${esc(l.title || l.url.replace(/^https?:\/\//, '').slice(0, 60))}</a><button data-a="msg-inbox" data-url="${esc(l.url)}" title="put it in your inbox, where it can be played">→ inbox</button></span>`).join('')}</div>` : '';
   const canReply = m.channel !== 'me';
   const acts = `<div class="acts">${canReply ? '<button data-a="msg-reply">reply</button>' : ''}${m.channel !== 'me' ? `<button data-a="msg-read">${m.read ? 'mark unread' : 'mark read'}</button>` : ''}<button data-a="msg-archive" class="faint">${m.archived ? 'unarchive' : 'archive'}</button></div>`;
-  return `<div class="msgcard${m.read || m.channel === 'me' ? '' : ' unread'}${m.channel === 'me' ? ' mine' : ''}" data-mid="${m.id}">
-    <div class="who">${msgFrom(m)}${m.title ? ` <b class="mtitle">${esc(m.title)}</b>` : ''}<span class="grow"></span><span class="meta">${ago(m.ts)} ago</span></div>
-    ${body}${links}${acts}</div>`;
+  const folded = msgFolded.has(m.id);
+  const preview = (m.meta && m.meta.html) ? (m.body || '').replace(/<[^>]+>/g, ' ') : (m.body || '');
+  return `<div class="msgcard${m.read || m.channel === 'me' ? '' : ' unread'}${m.channel === 'me' ? ' mine' : ''}${folded ? ' folded' : ''}" data-mid="${m.id}">
+    <div class="who" data-a="msg-fold" title="fold / unfold"><span class="chev">${folded ? '▸' : '▾'}</span>${msgFrom(m)}${m.title ? ` <b class="mtitle">${esc(m.title)}</b>` : ''}<span class="grow"></span><span class="meta">${ago(m.ts)} ago</span></div>
+    <div class="mpreview">${esc(preview.replace(/\s+/g, ' ').trim().slice(0, 140))}</div>
+    <div class="mfold">${body}${links}${acts}</div></div>`;
 }
 
 async function renderMessages() {
@@ -1276,6 +1302,7 @@ async function msgClick(b) {
   const m = mid && msgData ? msgData.messages.find(x => x.id === mid) : null;
   if (b.id === 'msg-refresh') { b.disabled = true; try { const r = await api('/api/messages/refresh', {}); if (r.error) toast(r.error, 5000); } finally { b.disabled = false; } await renderMessages(); return; }
   if (b.id === 'msg-archived') { msgArchived = !msgArchived; await renderMessages(); return; }
+  if (b.id === 'msg-foldall') { const cards = [...document.querySelectorAll('.msgcard')]; const on = cards.some(c => !c.classList.contains('folded')); cards.forEach(c => foldMsg(c, on)); b.textContent = on ? 'unfold all' : 'fold all'; return; }
   if (b.id === 'msg-compose') {
     $('#msg-composer').hidden = false; $('#msg-text').focus();
     if (!msgPeople) { try { msgPeople = await api('/api/zulip/people'); } catch (e) { toast(e.message); msgPeople = []; } }
@@ -1360,10 +1387,13 @@ async function takeToClaude(id) {
 /* ------------------------------------------------------------ events */
 
 document.addEventListener('click', async e => {
+  const who = e.target.closest('.msgcard > .who[data-a="msg-fold"]');
+  if (who && !e.target.closest('a, button')) { const card = who.parentElement; foldMsg(card, !card.classList.contains('folded')); return; }
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.v) { view = b.dataset.v; location.hash = view === 'feed' ? '' : view; render(); if (view === 'following') { loadSubs(); loadSync(); } else load(); return; }
   if (b.id && b.id.startsWith('fr-')) { friendsClick(b); return; }
+  if (b.id === 'compact') { setCompact(!document.body.classList.contains('compact')); return; }
   if ((b.id && b.id.startsWith('msg-')) || (b.dataset.a && b.dataset.a.startsWith('msg-'))) { msgClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
@@ -1559,10 +1589,12 @@ document.addEventListener('keydown', e => {
   else if (k === 'p') link('.acts a[href*="/pdf/"]');
   else if (k === 'c') art.querySelector('[data-a=citedby]')?.click();
   else if (k === 'r') art.querySelector('[data-a=refs]')?.click();
+  else if (k === 'x') foldCur(art);
   else return;
   e.preventDefault();
 });
 
+try { setCompact(localStorage.getItem('compact') === '1'); } catch (e) { /* ignore */ }
 let theme = null; try { theme = localStorage.getItem('theme'); } catch (e) { /* ignore */ }
 applyTheme(theme);
 $('#addhint').textContent = HINTS.yt;

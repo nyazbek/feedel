@@ -136,6 +136,10 @@ The **messages** tab is a small box with three kinds of mail:
 
   The endpoint only answers requests from this machine (it listens on 127.0.0.1 and refuses other origins). Opening `/mcp` in a browser explains itself.
 
+## Folding
+
+Long posts and summaries fold to a few lines with a *more* / *less* button; **compact** in the feed bar folds the whole feed (two lines per post, no summaries or photos, smaller thumbnails) and is remembered; `x` folds or unfolds the item under the cursor (its text, a paper's abstract, any open thread box). In **messages**, clicking a card's header folds it to one line, *fold all* / *unfold all* does them all, and folded cards stay folded in that browser.
+
 ## Settings (the gear)
 
 Hide thumbnails, calm titles (ALL CAPS → sentence case, `!!!` → `!`), hide seen, hide Shorts from the feed, minimum video length, a per-source cap so one prolific channel cannot drown the rest, block words (`/regex/` allowed), and whether feedel opens in its own window. The theme button cycles auto / light / dark.
