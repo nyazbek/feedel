@@ -9,7 +9,7 @@ let paperTypes = { new: true, cross: true, replace: false };  // what arXiv anno
 const ANNOUNCE_RANK = { new: 0, cross: 1, replace: 2 };
 let kwre = null;  // the keyword watches, as one regex, rebuilt at each render
 let curId = null, curIndex = -1;  // the item the keyboard is on
-const SNAP_KEYS = ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment', 'announce_date', 'announce_type', 'replaced'];
+const SNAP_KEYS = ['kind', 'id', 'cid', 'title', 'author', 'authors', 'ts', 'updated', 'dur', 'tags', 'desc', 'link', 'pdf', 'cats', 'primary', 'by', 'comment', 'announce_date', 'announce_type', 'replaced', 'thread', 'thread_ids', 'thread_started', 'photos', 'video', 'mp4', 'thumb'];
 let libKind = 'all', libTag = null;
 let data = null, subs = null;
 let loadSig = '', refreshPoll = null, refreshPolls = 0;  // while the server is refreshing, the feed is re-read every 3 s
@@ -587,11 +587,12 @@ function article(i) {
     const ctx = (c, label) => c ? `<div class="ctx"><span class="meta">${label} <button class="src" data-src="tw|${esc(c.user)}" title="their profile">${esc(c.name || '@' + c.user)}</button> @${esc(c.user)}${c.media ? ' · has media' : ''} · <a href="${esc(c.link)}" target="_blank" rel="noopener">${c.ts ? ago(c.ts) + ' ago' : 'open ↗'}</a> · <button class="link" data-a="twgo" data-url="${esc(c.link)}">see it</button></span><div class="ctxt${(c.text || '').length > 300 ? ' long' : ''}">${esc(c.text)}</div>${(c.text || '').length > 300 ? '<button class="more" data-a="more">more</button>' : ''}</div>` : '';
     const context = ctx(i.parent, i.parent && i.parent.user === me ? 'continuing their thread:' : 'replying to') + ctx(i.quote, 'quoting');
     const text = rt ? `<span class="rt">reposted ${esc(rt[1])}</span>${esc(rt[2])}` : rp ? (i.parent ? esc(rp[2]) : `<span class="rt">replying to ${esc(rp[1])}</span>${esc(rp[2])}`) : esc(i.title);
-    const threadBtn = `<button data-a="twthread" class="${i.convo || i.reply_to || rp ? '' : 'sec'}">thread</button>`;
+    const threadBtn = `<button data-a="twthread" class="${i.convo || i.reply_to || rp ? '' : 'sec'}">${i.thread ? 'replies' : 'thread'}</button>`;
+    const inthread = i.thread ? `<div class="inthread"><button class="link" data-a="inthread">▸ the thread goes on: ${i.thread.length} more post${i.thread.length === 1 ? '' : 's'}</button><div class="inposts">${i.thread.map((p, k) => twPost({ ...p, user: me, name: (i.author || '').replace(/^@/, ''), text: (p.title || '').replace(/^R to @\w+: /, '') }, 'after', `${k + 2}/`)).join('')}</div></div>` : '';
     const long = (i.title || '').length > 420;
     return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
-      <div class="by">${srcBtn(i)} · ${ago(i.ts)} ago${tags}</div>${context}
-      <div class="tweet${long ? ' long' : ''}">${text}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}${photos(i.photos)}
+      <div class="by">${srcBtn(i)} · ${i.thread ? `a thread of ${i.thread.length + 1} posts · started ${ago(i.thread_started)} ago · last ${ago(i.ts)} ago` : ago(i.ts) + ' ago'}${tags}</div>${context}
+      <div class="tweet${long ? ' long' : ''}">${text}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}${photos(i.photos)}${inthread}
       <div class="acts">${foldBtn}${playBtns}${threadBtn}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'ig') {
@@ -638,6 +639,7 @@ async function setMark(id, field, on) {
   const item = findItem(id);
   const set = field === 'saved' ? saved : seen;
   on ? set.add(id) : set.delete(id);
+  if (field === 'seen' && item && item.thread_ids) { item.thread_ids.forEach(t => on ? seen.add(t) : seen.delete(t)); api('/api/mark', { ids: item.thread_ids, field, on }).catch(() => {}); }
   if (field === 'saved') { if (on && item) savedItems[id] = { ...item, saved_at: Date.now() / 1000 }; else delete savedItems[id]; }
   render();
   const snap = item && snapshot(item);
@@ -1512,6 +1514,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'share') { openShare(art); return; }
   if (b.dataset.a === 'claude') { takeToClaude(id); return; }
   if (b.dataset.a === 'fold') { toggleFold(art); return; }
+  if (b.dataset.a === 'inthread') { const box = b.closest('.inthread'); box.classList.toggle('open'); b.textContent = (box.classList.contains('open') ? '▾' : '▸') + b.textContent.slice(1); return; }
   if (b.dataset.a === 'share-send') { sendShare(art); return; }
   if (b.dataset.a === 'share-rec') { showPeople(art.querySelector('.share')); return; }
   if (b.dataset.a === 'share-send-rec') { sendShare(art, true); return; }

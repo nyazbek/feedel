@@ -1788,6 +1788,45 @@ def compile_blocks(words):
             pass
     return out
 
+def group_threads(items):
+    """An author's own reply chain is one item, not one per post: the first post carries the rest as `thread`
+    (oldest first) and takes the newest post's time, so a thread that went on today shows up today. Only chains
+    whose first post is in the feed are grouped; a continuation of an older post stays a post with its context."""
+    def sid(link):
+        m = re.search(r"/status(?:es)?/(\d+)", link or "")
+        return m.group(1) if m else None
+    tw = [it for it in items if it["kind"] == "tw"]
+    by_sid = {sid(it["id"]): it for it in tw if sid(it["id"])}
+    parent_of = {}
+    for it in tw:
+        s = sid(it["id"])
+        if s and it.get("reply_to") and it.get("reply_to_user") == it.get("cid") and it["reply_to"] in by_sid and it["reply_to"] != s:
+            parent_of[s] = it["reply_to"]
+    if not parent_of:
+        return items
+    def root(s):
+        hops = set()
+        while s in parent_of and s not in hops:
+            hops.add(s)
+            s = parent_of[s]
+        return s
+    kids_of = {}
+    for s in parent_of:
+        kids_of.setdefault(root(s), []).append(by_sid[s])
+    drop = {id(k) for kids in kids_of.values() for k in kids}
+    out = []
+    for it in items:
+        if id(it) in drop:
+            continue
+        s = sid(it["id"]) if it["kind"] == "tw" else None
+        if s in kids_of:
+            kids = sorted(kids_of[s], key=lambda x: int(sid(x["id"])))
+            it = {**it, "thread": [{k: x.get(k) for k in ("id", "link", "title", "ts", "video", "mp4", "thumb", "dur", "photos") if x.get(k) is not None} for x in kids],
+                  "thread_ids": [x["id"] for x in kids], "thread_started": it["ts"], "ts": max([it["ts"]] + [x["ts"] for x in kids])}
+        out.append(it)
+    out.sort(key=lambda x: -(x.get("ts") or 0))
+    return out
+
 def visible_items():
     """Apply the personal filters at request time, so changing a setting takes effect without a refetch.
     A paper matched by several arXiv queries appears once, carrying every matching query's tags."""
@@ -1832,6 +1871,7 @@ def visible_items():
                 continue
             per[(it["kind"], it["cid"])] += 1
             out.append({**it, "tags": sub.get("tags", []), "author": sub.get("name") or it["author"]})
+        out = group_threads(out)
         cap = int(CONFIG.get("max_items", 400))  # a big category announces hundreds of papers a day: they get their own cap
         rest, pap = [it for it in out if it["kind"] != "arxiv"][:cap], [it for it in out if it["kind"] == "arxiv"][:max(cap, 2000)]
         keep = {id(it) for it in rest} | {id(it) for it in pap}
@@ -3826,6 +3866,8 @@ def mcp_item(it):
         out["tags"] = it["tags"]
     if it["kind"] == "arxiv":
         out.update({k: it[k] for k in ("authors", "categories", "announce_type") if k in it})
+    if it.get("thread"):
+        out["thread"] = [t.get("title", "") for t in it["thread"]]
     if it.get("id") in SEEN_STATE["seen"]:
         out["seen"] = True
     if it.get("id") in SEEN_STATE["saved"]:
