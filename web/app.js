@@ -106,6 +106,7 @@ async function load(onlyIfChanged = false) {
   savedItems = {}; (data.saved_items || []).forEach(i => { savedItems[i.id] = i; });
   $('#authors').innerHTML = (data.arxiv_authors || []).map(a => `<option value="${esc(a)}">`).join('');
   $('#stale').hidden = !data.stale;
+  showUpdate(d.update);
   migrateLocalSeen();
   render();
 }
@@ -867,6 +868,7 @@ function fillSettings() {
   $('#z_recs').value = z.recs_stream || '';
   $('#z_status').textContent = '';
   fillInstagram(s.instagram);
+  fillUpdate(s.update);
 }
 async function testZulip() {
   await saveSettings(true);
@@ -881,6 +883,8 @@ async function saveSettings(keepOpen) {
   patch.max_per_channel = +$('#s_max_per_channel').value || 0;
   patch.block_words = $('#s_block_words').value;
   patch.fallback_browser = $('#s_fallback_browser').value;
+  patch.auto_update = $('#s_auto_update').checked;
+  if ($('#gh_token').value.trim()) patch.github_token = $('#gh_token').value.trim();
   patch.zulip = { site: $('#z_site').value, stream: $('#z_stream').value, email: $('#z_email').value, api_key: $('#z_key').value,
     streams: { yt: $('#z_s_yt').value, arxiv: $('#z_s_arxiv').value, rss: $('#z_s_rss').value, tw: $('#z_s_tw').value }, extra_streams: $('#z_extra').value, recs_stream: $('#z_recs').value };
   try {
@@ -1193,6 +1197,34 @@ async function renderMessages() {
 
 // the settings panel shows the MCP address of this very instance (the port can differ from the default)
 (function mcpAddress() { const u = location.origin + '/mcp'; const e = $('#mcp_url'), c = $('#mcp_cmd'); if (e) e.textContent = u; if (c) c.textContent = 'claude mcp add --transport http feedel ' + u; })();
+function showUpdate(u) {
+  const n = $('#update'); if (!n) return;
+  if (!u || !u.available) { n.hidden = true; return; }
+  const r = u.remote || {}, when = r.date ? ' · ' + new Date(r.date).toLocaleString() : '';
+  $('#update-text').textContent = u.ready ? `a newer feedel is ready (${r.short}${when}): it goes in at the next start, or now.`
+    : u.mode === 'git' ? `main moved on GitHub (${r.short}${when}): pull and restart to use it.`
+    : u.mode === 'exe' ? `a newer feedel is on GitHub (${r.short}${when}).` : `a newer feedel is on GitHub (${r.short}${when}), but this copy cannot update itself.`;
+  $('#update-go').textContent = u.ready ? 'restart with it' : u.mode === 'git' ? 'pull and restart' : u.mode === 'exe' ? 'download and restart' : 'ok';
+  $('#update-go').hidden = u.mode === 'none';
+  n.hidden = false;
+}
+function fillUpdate(u) {
+  u = u || {}; const st = $('#upd_status'); if (!st) return;
+  const l = u.local || {}, r = u.remote || {};
+  st.textContent = `this copy: ${l.short || 'unknown build'}${l.date ? ' (' + new Date(l.date).toLocaleDateString() + ')' : ''}` +
+    (r.short ? ` · GitHub: ${r.short}${r.date ? ' (' + new Date(r.date).toLocaleDateString() + ')' : ''}${u.available ? (u.ready ? ' · downloaded, goes in at the next start' : ' · newer') : ' · same'}` : '') +
+    (u.error ? ` · ${u.error}` : '');
+  $('#s_auto_update').checked = u.auto !== false && (data.settings.auto_update !== false);
+  $('#gh_token_state').textContent = u.token_set ? 'a token is saved; leave the field empty to keep it' : (u.mode === 'exe' || u.mode === 'git') ? '' : 'this copy cannot update itself';
+}
+async function updateClick(b) {
+  if (b.id === 'upd_check') { b.disabled = true; try { const u = await api('/api/update?check=1'); fillUpdate(u); showUpdate(u); } catch (e) { toast(e.message); } finally { b.disabled = false; } return; }
+  if (b.id === 'update-go') {
+    b.disabled = true; $('#update-status').textContent = 'working…';
+    try { const r = await api('/api/update/apply', {}); $('#update-status').textContent = r.restarting ? 'restarting… the page reloads when it is back' : 'done'; if (r.restarting) setTimeout(() => location.reload(), 6000); }
+    catch (e) { $('#update-status').textContent = e.message; b.disabled = false; }
+  }
+}
 function fillInstagram(ig) {
   ig = ig || {};
   const st = $('#ig_status'); if (!st) return;
@@ -1351,6 +1383,7 @@ document.addEventListener('click', async e => {
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
   if (b.id === 'ig_connect' || b.id === 'ig_disconnect') { igClick(b); return; }
+  if (b.id === 'upd_check' || b.id === 'update-go') { updateClick(b); return; }
   if (b.id === 'quit') { if (confirm('stop feedel? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">feedel stopped. start it again to continue.</p></main>'; } return; }
   if (b.id === 'importbtn') { const t = $('#paste').value.trim(); if (t) { importText(t, ''); $('#paste').value = ''; } return; }
   if (b.id === 'gconnect') { connectGoogle(); return; }

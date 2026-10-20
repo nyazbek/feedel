@@ -152,6 +152,10 @@ pip install pywebview pystray pillow
 
 Without them `--window` falls back to the browser exactly as before and writes one line to the log saying what to install. `--browser` opens the browser this once when the setting is on; `--no-open` opens nothing.
 
+## Updating itself
+
+Every push to main is built by GitHub and published as the rolling **latest** release; tags starting with `v` get releases of their own. A running feedel asks GitHub once soon after it starts and then every six hours; when main has moved on, the executable fetches the new build next to itself (`feedel.new.exe`) and swaps it in at the next start, or right away from the notice at the top of the page. A copy run from a git checkout offers `git pull` and restart instead. The gear shows which commit this copy is and which one GitHub has, with *check now*; *fetch new builds by itself* turns the automatic download off. While the repository is private the check needs a GitHub token (a fine-grained one with *Contents: read* on the repository), pasted under the gear; a public repository needs none.
+
 ## Building the executable
 
 ```

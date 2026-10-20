@@ -31,6 +31,7 @@
 </aside>
 <main>
 
+<div id="update" class="notice" hidden><span id="update-text"></span> <button id="update-go" class="solid">restart with it</button><span class="meta" id="update-status"></span></div>
 <div id="stale" class="notice" hidden>feedel's code changed since this copy started, so parts of the page will not work until it restarts. <button id="restart" class="solid">restart feedel</button><span class="meta" id="restart-status"></span></div>
 
 <div id="help" class="panel help" hidden>
@@ -84,6 +85,9 @@
   <div class="row"><b>Claude</b><span class="meta">this feedel is an MCP server at <code id="mcp_url">http://127.0.0.1:8765/mcp</code>; in a terminal:</span></div>
   <pre class="cmd" id="mcp_cmd">claude mcp add --transport http feedel http://127.0.0.1:8765/mcp</pre>
   <p class="meta">then Claude Code can read your feed, library and friends' discussions and leave you notes in <b>messages</b>. the <code>feedel-briefing</code> skill in the repo writes a daily briefing with tasks.</p>
+  <div class="row"><b>Updates</b><span class="meta" id="upd_status">…</span><button id="upd_check" class="link">check now</button></div>
+  <div class="row"><label><input type="checkbox" id="s_auto_update"> fetch new builds by itself (they go in at the next start)</label></div>
+  <div class="row"><input id="gh_token" type="password" placeholder="GitHub token, only if the repository is private (fine-grained, Contents: read)" autocomplete="off"><span class="meta" id="gh_token_state"></span></div>
   <div class="row"><b>Instagram</b><span class="meta" id="ig_status">not connected</span></div>
   <div class="row"><input id="ig_token" type="password" placeholder="paste the access token from Meta's app dashboard" autocomplete="off"><button id="ig_connect" class="solid">connect</button><button id="ig_disconnect" class="link" hidden>disconnect</button></div>
   <details class="steps-box"><summary class="meta">how to get the token (one-time, about twenty minutes)</summary>

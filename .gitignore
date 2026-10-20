@@ -12,6 +12,13 @@ client_secret.json
 google_token.json
 *.db
 
+# a build fetched by the updater, and the one it replaced
+feedel.new.exe*
+feedel.new
+feedel.new.part
+*.exe.old
+web/build.json
+
 # build output
 build/
 dist/

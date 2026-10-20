@@ -82,7 +82,9 @@ DEFAULT_CONFIG = {
     # window: the page in its own window (pywebview) with a tray icon instead of a browser tab; the size and position it had
     # last time are kept under "window" below
     "ui": {"hide_thumbnails": False, "calm_titles": True, "hide_seen": False, "watch_clipboard": False, "clipboard_any": False,
-           "window": False},
+           "window": False, "auto_update": True},
+    # a GitHub token (fine-grained, "Contents: read" on the repository) lets a copy update itself from a private repository
+    "github_token": "",
     "window": {"width": 1100, "height": 800, "x": None, "y": None},
     "fallback_browser": "",
     # "browser": name of a browser signed in to YouTube whose subscriptions are re-read on every refresh (needs yt-dlp)
@@ -1844,6 +1846,7 @@ def settings_payload():
                       "invite": z.get("invite", ""), "organizer": z.get("organizer", ""),
                       "api_key_set": bool(z.get("api_key"))},  # the key itself never goes back to the page
             "instagram": {k: v for k, v in ig_status().items() if k != "error"},
+            "update": update_status(),
             "fallback_browser": CONFIG.get("fallback_browser", ""), "fallback_browser_auto": browser_for_the_rest() or "",
             "window_libs_missing": window_libs_missing(), "in_window": "show" in WINDOW,
             **CONFIG["ui"]}
@@ -1859,6 +1862,7 @@ def items_payload():
                 "arxiv_keywords": [s["name"] for s in sub_list("arxiv") if s.get("qtype") == "search"],
                 "inbox": inbox_list(),
                 "messages_unread": msg_unread(),
+                "update": {k: v for k, v in update_status().items() if k in ("available", "ready", "mode", "remote", "local", "error")},
                 "followed": {k: [s.get("id") for s in sub_list(k)] for k in KINDS},
                 "discussions": discussions_payload(),
                 "recs": recs_payload(),
@@ -1889,9 +1893,13 @@ def update_settings(patch):
         if "block_words" in patch:
             v = patch["block_words"]
             CONFIG["filters"]["block_words"] = [w.strip() for w in (v if isinstance(v, list) else str(v).splitlines()) if w.strip()]
-        for k in ("hide_thumbnails", "calm_titles", "hide_seen", "watch_clipboard", "clipboard_any", "window"):
+        for k in ("hide_thumbnails", "calm_titles", "hide_seen", "watch_clipboard", "clipboard_any", "window", "auto_update"):
             if k in patch:
                 CONFIG["ui"][k] = bool(patch[k])
+        if patch.get("github_token"):  # an empty field means "keep the one I already saved"
+            CONFIG["github_token"] = str(patch["github_token"]).strip()
+        if patch.get("clear_github_token"):
+            CONFIG["github_token"] = ""
         if "fallback_browser" in patch:
             CONFIG["fallback_browser"] = str(patch["fallback_browser"] or "").strip().strip('"')
         if isinstance(patch.get("zulip"), dict):
@@ -4012,6 +4020,178 @@ def mcp_handle(msg):
         return ok({"prompts": []})
     return err(-32601, f"method not found: {method}")
 
+# ---------------------------------------------------------------- updates (a newer build on GitHub, fetched and swapped in by itself)
+
+UPDATE_REPO = "nyazbek/feedel"
+UPDATE_ASSET = {"win32": "feedel-windows.exe", "darwin": "feedel-macos"}.get(sys.platform)
+
+def build_info():
+    """Which commit this copy is: web/build.json stamped by the GitHub build, or git's answer when run from a checkout."""
+    info = {}
+    try:
+        with open(os.path.join(WEB, "build.json"), encoding="utf-8") as f:
+            info = json.load(f)
+    except Exception:
+        pass
+    if not FROZEN and os.path.isdir(os.path.join(HERE, ".git")) and shutil.which("git"):
+        try:
+            sha = subprocess.run(["git", "-C", HERE, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+            date = subprocess.run(["git", "-C", HERE, "log", "-1", "--format=%cI"], capture_output=True, text=True, timeout=10).stdout.strip()
+            if sha:
+                info = {"sha": sha, "short": sha[:7], "date": date, "ref": "source"}
+        except Exception:
+            pass
+    if info.get("sha") and not info.get("short"):
+        info["short"] = info["sha"][:7]
+    return info
+
+def gh_headers():
+    h = {"Accept": "application/vnd.github+json", "User-Agent": "feedel/1.0", "X-GitHub-Api-Version": "2022-11-28"}
+    t = (CONFIG.get("github_token") or "").strip()
+    if t:
+        h["Authorization"] = "Bearer " + t
+    return h
+
+def update_mode():
+    """How this copy can update: 'exe' (swap the executable), 'git' (pull the checkout), or 'none'."""
+    if FROZEN:
+        return "exe" if UPDATE_ASSET else "none"
+    return "git" if os.path.isdir(os.path.join(HERE, ".git")) and shutil.which("git") else "none"
+
+def pending_path():
+    return os.path.join(HERE, "feedel.new.exe" if sys.platform == "win32" else "feedel.new")
+
+def update_status():
+    st = dict(STATE.get("update") or {})
+    st["mode"] = update_mode()
+    st["local"] = st.get("local") or build_info()
+    st["ready"] = bool(st.get("ready_sha")) and st.get("ready_sha") == (st.get("remote") or {}).get("sha") and os.path.exists(pending_path())
+    st["token_set"] = bool((CONFIG.get("github_token") or "").strip())
+    return st
+
+def update_check():
+    """Ask GitHub for the rolling 'latest' release of main: its commit (in the notes) and the asset for this platform."""
+    st = STATE.setdefault("update", {})
+    st.update({"checked": int(time.time()), "error": None, "local": build_info()})
+    try:
+        r = json.loads(fetch(f"https://api.github.com/repos/{UPDATE_REPO}/releases/tags/latest", timeout=20, headers=gh_headers()))
+    except urllib.error.HTTPError as e:
+        st["error"] = {404: "no build of main on GitHub yet, or the repository is private and no GitHub token is set (settings)",
+                       401: "GitHub refused the token", 403: "GitHub refused: a private repository without a token, or too many requests"}.get(e.code, f"GitHub said {e.code}")
+        st["available"] = False
+        return update_status()
+    except Exception as ex:
+        st["error"] = str(ex)
+        st["available"] = False
+        return update_status()
+    notes = r.get("body") or ""
+    m = re.search(r"sha=([0-9a-f]{7,40})", notes)
+    d = re.search(r"date=(\S+)", notes)
+    remote = {"sha": m.group(1) if m else "", "short": (m.group(1) if m else "")[:7], "date": d.group(1) if d else (r.get("published_at") or "")}
+    asset = next((a for a in r.get("assets", []) if a.get("name") == UPDATE_ASSET), None)
+    st.update({"remote": remote, "asset_url": asset.get("url") if asset else None, "asset_size": asset.get("size") if asset else None})
+    local = st["local"]
+    newer = bool(remote["sha"]) and remote["sha"] != local.get("sha") and (not local.get("date") or remote["date"] > local.get("date", ""))
+    st["available"] = newer and (update_mode() != "exe" or asset is not None)
+    return update_status()
+
+def update_download():
+    """Fetch the new executable next to this one, as feedel.new.exe; it is swapped in at the next start (or on request).
+    The API's asset URL answers with a redirect to a signed download, and the token must not travel to that host."""
+    st = STATE.setdefault("update", {})
+    if update_mode() != "exe":
+        raise RuntimeError("this copy runs from source: it updates with git pull")
+    if not st.get("asset_url"):
+        update_check()
+    if not st.get("asset_url"):
+        raise RuntimeError(st.get("error") or "no build for this platform on GitHub")
+    opener = urllib.request.build_opener(NoRedirect)
+    req = urllib.request.Request(st["asset_url"], headers={**gh_headers(), "Accept": "application/octet-stream"})
+    loc, first = "", None
+    try:
+        first = opener.open(req, timeout=60)
+    except urllib.error.HTTPError as e:
+        if e.code not in (301, 302, 303, 307, 308):
+            raise RuntimeError(f"GitHub said {e.code} for the download")
+        loc = e.headers.get("Location", "")
+    tmp = pending_path() + ".part"
+    with open(tmp, "wb") as f:
+        if first is not None and not first.headers.get("Location"):
+            shutil.copyfileobj(first, f, 1 << 20)
+        else:
+            loc = loc or first.headers.get("Location", "")
+            with urllib.request.urlopen(urllib.request.Request(loc, headers={"User-Agent": "feedel/1.0"}), timeout=900) as r:
+                shutil.copyfileobj(r, f, 1 << 20)
+    if os.path.getsize(tmp) < 5_000_000:
+        os.remove(tmp)
+        raise RuntimeError("the download is too small to be feedel; not applied")
+    os.replace(tmp, pending_path())
+    if sys.platform != "win32":
+        os.chmod(pending_path(), 0o755)
+    st["ready_sha"] = (st.get("remote") or {}).get("sha")
+    log(f"update downloaded: {st['ready_sha'][:7] if st.get('ready_sha') else '?'} → {pending_path()}")
+    return update_status()
+
+def swap_pending_exe():
+    """Put the downloaded executable in place of this one. A running executable can be renamed on Windows, not
+    overwritten: this one becomes feedel.exe.old, which the next start deletes. True when a swap happened."""
+    new, exe = pending_path(), sys.executable
+    if not (FROZEN and os.path.exists(new) and os.path.getsize(new) > 5_000_000):
+        return False
+    old = exe + ".old"
+    try:
+        if os.path.exists(old):
+            os.remove(old)
+    except OSError:
+        pass
+    os.replace(exe, old)
+    try:
+        os.replace(new, exe)
+    except OSError:
+        os.replace(old, exe)  # put it back; nothing changed
+        raise
+    log("updated: the new executable is in place")
+    return True
+
+def cleanup_old_exe():
+    old = sys.executable + ".old"
+    if FROZEN and os.path.exists(old):
+        try:
+            os.remove(old)
+        except OSError:
+            pass  # still exiting; next start
+
+def update_apply():
+    """Use the new version now: swap the executable, or pull the checkout, then restart."""
+    mode = update_mode()
+    if mode == "exe":
+        if not swap_pending_exe():
+            update_download()
+            swap_pending_exe()
+    elif mode == "git":
+        r = subprocess.run(["git", "-C", HERE, "pull", "--ff-only"], capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise RuntimeError("git pull failed: " + (r.stderr or r.stdout).strip()[:300])
+        log("updated: " + (r.stdout.strip().splitlines() or ["pulled"])[-1])
+    else:
+        raise RuntimeError("this copy cannot update itself (no executable asset and no git checkout)")
+    STATE.setdefault("update", {}).update({"available": False, "ready_sha": None})
+    restart_self()
+    return {"ok": True, "restarting": True}
+
+def update_loop():
+    """Once soon after start and then every six hours: look, and (unless turned off) fetch the new executable so the
+    next start is already the new version."""
+    time.sleep(25)
+    while True:
+        try:
+            st = update_check()
+            if st.get("available") and CONFIG["ui"].get("auto_update", True) and update_mode() == "exe" and not st.get("ready"):
+                update_download()
+        except Exception as ex:
+            log("update check:", ex)
+        time.sleep(6 * 3600)
+
 # ---------------------------------------------------------------- window (optional: the page in its own window, with a tray icon)
 # `--window`, or the ui.window setting: the page opens in a native window (pywebview: WebView2 on Windows, WebKit on macOS)
 # instead of a browser tab, and closing it hides it to a tray icon (pystray) whose menu is open / refresh / quit. The server
@@ -4260,6 +4440,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(sync_payload())
             if p.path == "/api/inbox":
                 return self._send(inbox_list())
+            if p.path == "/api/update":
+                if q.get("check", [""])[0]:
+                    return self._send(update_check())
+                return self._send(update_status())
             if p.path == "/api/ig/status":
                 return self._send(ig_status())
             if p.path == "/api/messages":
@@ -4456,6 +4640,10 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/inbox/remove":
                 inbox_remove(str(body.get("url", "")))
                 return self._send({"ok": True})
+            if p.path == "/api/update/download":
+                return self._send(update_download())
+            if p.path == "/api/update/apply":
+                return self._send(update_apply())
             if p.path == "/api/claude":  # "take to claude": open a new conversation with the item's content as the prompt
                 prompt = str(body.get("prompt", "")).strip()
                 if not prompt:
@@ -4591,6 +4779,15 @@ if __name__ == "__main__":
         if rc is not None:
             sys.exit(rc)
         # falls through: start the server, which takes the queued link and opens the page on the inbox
+    if FROZEN and os.path.exists(pending_path()):  # a build fetched last time: swap it in and start that one instead
+        try:
+            if swap_pending_exe():
+                env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
+                subprocess.Popen([sys.executable] + sys.argv[1:], env=env, close_fds=True)
+                os._exit(0)
+        except Exception as ex:
+            log("could not apply the downloaded update:", ex)
+    cleanup_old_exe()
     if FIRST_RUN:
         log("Created feedel.db — open the page and use the 'following' tab to import your subscriptions.")
     port = PORT
@@ -4615,6 +4812,7 @@ if __name__ == "__main__":
         sys.exit(0)
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=clipboard_loop, daemon=True).start()
+    threading.Thread(target=update_loop, daemon=True).start()
     remember_default_browser()
     log(f"feedel on http://localhost:{port}  (Ctrl+C to stop)")
     if STATE.get("queued_link"):

@@ -1,10 +1,11 @@
 # Builds a single-file feedel for Windows and macOS.
-# Runs on every tag that starts with "v" (git tag v0.2 && git push --tags) and attaches
-# the binaries to a GitHub release; can also be run by hand from the Actions tab.
+# Every push to main becomes the rolling "latest" release (feedel updates itself from it); every tag that starts
+# with "v" (git tag v0.2 && git push --tags) becomes a release of its own; the Actions tab can run it by hand.
 name: build
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -32,6 +33,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyinstaller yt-dlp pywebview pystray pillow
+      - name: stamp the build with its commit
+        shell: bash
+        run: |
+          echo "{\"sha\": \"${GITHUB_SHA}\", \"short\": \"${GITHUB_SHA::7}\", \"date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"ref\": \"${GITHUB_REF_NAME}\"}" > web/build.json
+          cat web/build.json
       - name: build
         run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name feedel --add-data "web${{ matrix.sep }}web" --collect-submodules yt_dlp --collect-all webview --collect-submodules pystray --collect-submodules PIL feedel.py
       - name: smoke test (serves the page and answers as yt-dlp)
@@ -47,11 +53,28 @@ jobs:
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
-      - name: attach to release
-        if: startsWith(github.ref, 'refs/tags/')
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: attach to the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --generate-notes
-          gh release upload "${GITHUB_REF_NAME}" "${{ matrix.asset }}" --clobber
+          ls -la assets
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes --target "$GITHUB_SHA"
+            gh release upload "$GITHUB_REF_NAME" assets/* --clobber
+          else
+            NOTES="Rolling build of main, replaced on every push. feedel updates itself from it. sha=${GITHUB_SHA} date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh release delete latest --cleanup-tag --yes > /dev/null 2>&1 || true
+            gh release create latest --prerelease --title "latest (main)" --notes "$NOTES" --target "$GITHUB_SHA" assets/*
+          fi
