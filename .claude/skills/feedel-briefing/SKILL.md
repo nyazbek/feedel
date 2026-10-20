@@ -16,10 +16,10 @@ The person reads deliberately: they follow a small set of channels, accounts, bl
 3. **Choose.** Pick two to five items, no more: a long video from a channel they follow is worth more than ten posts; a paper matching a saved paper's topic is worth more than a new category listing; a discussion a friend opened about something in the feed is always worth mentioning. Prefer what connects to their library. Skip anything that is only hype.
 4. **Write the note** with `send_message`:
    - `title`: the date, e.g. `Sunday 18 Oct` (or in the person's language if their replies are in Spanish).
-   - `### papers` (only when at least one paper passed the rule above): title, authors, one line why.
    - `body` in Markdown, under 200 words:
      - one opening line with the shape of the day (how much is new, in which kinds);
      - `### para hoy` / `### for today`: the picks as task lines `- [ ] watch … (20 min) — why`, each with its link in the `links` field, not inline;
+     - `### papers` (only when at least one paper passed the rule below): title, authors, one line why;
      - `### con amigos` / `### with friends`: one or two lines on open discussions, only if there are any;
      - carried-over tasks, marked `(from Tuesday)`;
      - one closing line if there is something to decide or reply to.
