@@ -4199,6 +4199,12 @@ def update_loop():
 def claude_home():
     return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
 
+def claude_env():
+    """The environment for a `claude` child. When feedel itself was started from inside a Claude Code session, the
+    session's CLAUDE_* variables would make the child behave as that session's helper (and fail to log in on its
+    own): a child of feedel is always a fresh, stand-alone Claude Code."""
+    return {k: v for k, v in os.environ.items() if not (k.startswith("CLAUDE") or k == "ANTHROPIC_BASE_URL")}
+
 def claude_cli():
     """The `claude` command-line program (Claude Code), if installed."""
     p = find_exe("claude")
@@ -4233,7 +4239,7 @@ def mcp_install(on=True):
     if cli:
         cmd = [cli, "mcp", "add", "--transport", "http", "--scope", "user", "feedel", mcp_url()] if on else [cli, "mcp", "remove", "--scope", "user", "feedel"]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=claude_env())
             if r.returncode == 0 or (not on and "not found" in (r.stderr + r.stdout).lower()):
                 return {"ok": True, "installed": mcp_installed()[0], "how": "claude mcp", "note": (r.stdout or r.stderr).strip()[:200]}
             note = (r.stderr or r.stdout).strip()[:200]
@@ -4324,7 +4330,7 @@ def briefing_run(trigger="by hand"):
         if (b.get("model") or "").strip():
             cmd += ["--model", b["model"].strip()]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1500, cwd=HERE, encoding="utf-8", errors="replace")
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1500, cwd=HERE, encoding="utf-8", errors="replace", env=claude_env())
             out = (r.stdout or "").strip()
             err = (r.stderr or "").strip()
             rec["ok"] = r.returncode == 0 and "Failed to authenticate" not in out + err
