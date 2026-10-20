@@ -562,12 +562,13 @@ function zulipTopicUrl(topic, stream) {
 }
 
 function article(i) {
-  const sn = seen.has(i.id), sv = saved.has(i.id);
+  const sn = seen.has(i.id), sv = saved.has(i.id), fold = itemFold.get(i.id);
   const tags = (i.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
   // primary actions stay visible; the rest fade in when the item is hovered or focused, so the list reads as text
   const saveBtn = `<button data-a="save">${sv ? 'unsave' : 'save'}</button><button data-a="copy" class="sec">copy link</button><button data-a="share" class="sec">share</button>${['arxiv', 'tw', 'rss'].includes(i.kind) ? `<button data-a="claude" class="${i.kind === 'arxiv' ? '' : 'sec'}" title="a new conversation on claude.ai with this in the prompt">take to claude</button>` : ''}`;
   const seenBtn = `<button data-a="seen" class="sec">${sn ? 'unmark' : 'mark seen'}</button>`;
-  const cls = `${i.kind}${sn ? ' seen' : ''}`;
+  const foldBtn = `<button data-a="fold" class="foldbtn" title="fold / unfold this one (x)">${(fold === 'folded' || (fold !== 'unfolded' && document.body.classList.contains('compact'))) ? '▸' : '▾'}</button>`;
+  const cls = `${i.kind}${sn ? ' seen' : ''}${fold ? ' ' + fold : ''}`;
   if (i.kind === 'yt') {
     const nothumb = data.settings.hide_thumbnails;
     return `<article class="${cls}${nothumb ? ' nothumb' : ''}" data-id="${esc(i.id)}">${nothumb ? '' : `<img loading="lazy" src="/thumb/${esc(i.id)}" alt="">`}
@@ -591,7 +592,7 @@ function article(i) {
     return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
       <div class="by">${srcBtn(i)} · ${ago(i.ts)} ago${tags}</div>${context}
       <div class="tweet${long ? ' long' : ''}">${text}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}${photos(i.photos)}
-      <div class="acts">${playBtns}${threadBtn}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
+      <div class="acts">${foldBtn}${playBtns}${threadBtn}${i.cid === 'inbox' ? `<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>` : ''}${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'ig') {
     // a reel someone sent you: pre-approved, played in your player, never on Instagram
@@ -601,14 +602,14 @@ function article(i) {
     return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
       <div class="by"><b>${esc(i.name || i.author || '')}</b>${i.name && i.author ? ' · ' + esc(i.author) : ''} · instagram · ${ago(i.ts)} ago${tags}</div>
       <div class="tweet${long ? ' long' : ''}">${esc(i.title)}</div>${long ? '<button class="more" data-a="more">more</button>' : ''}
-      <div class="acts">${playBtns}<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
+      <div class="acts">${foldBtn}${playBtns}<a href="${esc(i.link)}" target="_blank" rel="noopener" class="faint">open ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'rss') {
     return `<article class="${cls}" data-id="${esc(i.id)}"><div>
       <p class="t"><a href="${esc(i.link)}" target="_blank" rel="noopener">${esc(i.title)}</a></p>
       <div class="by">${srcBtn(i)}${i.by && i.by !== i.author ? ' · ' + esc(i.by) : ''} · ${ago(i.ts)} ago${tags}</div>
       ${i.desc ? `<div class="desc">${esc(i.desc)}</div>${i.desc.length > 180 ? '<button class="more" data-a="more">more</button>' : ''}` : ''}
-      <div class="acts"><a href="${esc(i.link)}" target="_blank" rel="noopener">open ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
+      <div class="acts">${foldBtn}<a href="${esc(i.link)}" target="_blank" rel="noopener">open ↗</a>${saveBtn}${seenBtn}</div>${discLine(i)}</div></article>`;
   }
   if (i.kind === 'follow') {
     return `<article class="rss" data-id="${esc(i.id)}"><div>
@@ -628,7 +629,7 @@ function article(i) {
       <div class="by">${dateStr(i.ts)}${atype}${replaced}${cats}${tags}${i.comment ? ` · <span class="cats">${esc(i.comment)}</span>` : ''}<span class="insp" data-insp="${esc(i.id)}">${insp ? inspLine(insp) : ''}</span>${kw.length ? `<span class="kw">${esc(kw.join(', '))}</span>` : ''}</div>
       <div class="abs" hidden>${i.desc ? hl(i.desc) : '<span class="meta">no abstract was fetched for this one; abs ↗ has it</span>'}</div>
       <div class="menu" hidden></div>
-      <div class="acts"><button data-a="abs">abstract</button><a href="${esc(i.link)}" target="_blank" rel="noopener">abs ↗</a><a href="${esc(i.pdf)}" target="_blank" rel="noopener">pdf ↗</a>${saveBtn}${seenBtn}<button data-a="citedby" class="sec">cited by</button><button data-a="refs" class="sec">references</button></div>${discLine(i)}</div></article>`;
+      <div class="acts">${foldBtn}<button data-a="abs">abstract</button><a href="${esc(i.link)}" target="_blank" rel="noopener">abs ↗</a><a href="${esc(i.pdf)}" target="_blank" rel="noopener">pdf ↗</a>${saveBtn}${seenBtn}<button data-a="citedby" class="sec">cited by</button><button data-a="refs" class="sec">references</button></div>${discLine(i)}</div></article>`;
   }
   return '';
 }
@@ -789,9 +790,23 @@ function restoreInspire() {
 
 function listRoot() { return view === 'feed' ? $('#list') : view === 'library' ? $('#liblist') : view === 'source' ? $('#srclist') : null; }
 function shownArticles() { const r = listRoot(); return r ? [...r.querySelectorAll('article[data-id]')] : []; }
+const itemFold = new Map();  // item id → 'folded' | 'unfolded': this item's own fold, over the global compact mode
+try { Object.entries(JSON.parse(localStorage.getItem('itemfold') || '{}')).forEach(([k, v]) => itemFold.set(k, v)); } catch (e) { /* ignore */ }
+function saveItemFold() { try { localStorage.setItem('itemfold', JSON.stringify(Object.fromEntries(itemFold))); } catch (e) { /* ignore */ } }
+function isFolded(art) { return art.classList.contains('folded') || (document.body.classList.contains('compact') && !art.classList.contains('unfolded')); }
+function toggleFold(art) {
+  const id = art.dataset.id, folded = isFolded(art), compact = document.body.classList.contains('compact');
+  const next = folded ? (compact ? 'unfolded' : null) : (compact ? null : 'folded');  // back to the default when it matches
+  if (next) itemFold.set(id, next); else itemFold.delete(id);
+  saveItemFold();
+  art.classList.toggle('folded', next === 'folded'); art.classList.toggle('unfolded', next === 'unfolded');
+  const b = art.querySelector('button.foldbtn'); if (b) b.textContent = isFolded(art) ? '▸' : '▾';
+}
 function setCompact(on) {
+  const was = document.body.classList.contains('compact');
   document.body.classList.toggle('compact', on);
   const b = $('#compact'); if (b) b.textContent = on ? 'full' : 'compact';
+  if (was !== on && typeof data !== 'undefined' && data) render();
   try { localStorage.setItem('compact', on ? '1' : '0'); } catch (e) { /* ignore */ }
 }
 // x: fold the current item (text clamped, abstract hidden, thread boxes closed), or unfold it when it is folded
@@ -1496,6 +1511,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.a === 'tw-play') { try { toast(await api('/api/play_url', { url: b.dataset.url })); } catch (err) { toast(err.message); } return; }
   if (b.dataset.a === 'share') { openShare(art); return; }
   if (b.dataset.a === 'claude') { takeToClaude(id); return; }
+  if (b.dataset.a === 'fold') { toggleFold(art); return; }
   if (b.dataset.a === 'share-send') { sendShare(art); return; }
   if (b.dataset.a === 'share-rec') { showPeople(art.querySelector('.share')); return; }
   if (b.dataset.a === 'share-send-rec') { sendShare(art, true); return; }
@@ -1591,7 +1607,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'p') link('.acts a[href*="/pdf/"]');
   else if (k === 'c') art.querySelector('[data-a=citedby]')?.click();
   else if (k === 'r') art.querySelector('[data-a=refs]')?.click();
-  else if (k === 'x') foldCur(art);
+  else if (k === 'x') toggleFold(art);
   else return;
   e.preventDefault();
 });

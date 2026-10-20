@@ -4302,8 +4302,8 @@ def briefing_prompt():
     L += ["## Steps", "",
           "1. Read before writing: `messages` with limit 10. Find your last briefing (sender Claude). Carry over its unticked `- [ ]` tasks "
           "(at most five, oldest first, marked with the day they came from); if the person replied under it (channel \"me\"), answer each reply "
-          "in one line in the new note. If a note from you with today's date already exists, do not write another: reply to it with "
-          "`send_message` and `reply_to` set to its id, saying only what changed.",
+          "in one line in the new note. Every briefing is a note of its own, never a reply to an earlier one: when a note of yours "
+          "already exists today, the new one is short and says only what changed (its title gets the time: \"martes 20, 15:30\").",
           "2. Look at the day: `feed` with hours 36 and unseen_only true, once per kind (yt, tw, rss, arxiv; for arxiv use limit 150); "
           "`library` with limit 10 (their tags and notes show what they care about); `discussions` with limit 20.",
           "3. Choose two to five items in all, no more. A long video from a channel they follow beats ten posts; a paper in their area beats "

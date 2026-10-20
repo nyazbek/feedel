@@ -34,4 +34,4 @@ The profile for this repo's owner (adjust yours in the scheduled task's prompt):
 
 ## When run on a schedule
 
-A scheduled run has no one to ask: write the note anyway, say in its last line what you were unsure about, and keep it shorter. Never post twice for the same day: if `messages` shows a note from you with today's date, reply to it (`reply_to`) with what changed instead of writing a new one.
+A scheduled run has no one to ask: write the note anyway, say in its last line what you were unsure about, and keep it shorter. Every briefing is a note of its own, never a reply to an earlier one (`reply_to` is only for answering the person): when `messages` shows a note of yours from today already, the new one is short and says only what changed, with the time in its title.

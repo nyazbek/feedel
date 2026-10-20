@@ -138,7 +138,7 @@ The **messages** tab is a small box with three kinds of mail:
 
 ## Folding
 
-Long posts and summaries fold to a few lines with a *more* / *less* button; **compact** in the feed bar folds the whole feed (two lines per post, no summaries or photos, smaller thumbnails) and is remembered; `x` folds or unfolds the item under the cursor (its text, a paper's abstract, any open thread box). In **messages**, clicking a card's header folds it to one line, *fold all* / *unfold all* does them all, and folded cards stay folded in that browser.
+Long posts and summaries fold to a few lines with a *more* / *less* button. Every item has its own fold (the ▾ / ▸ at the start of its actions, or `x` on the item under the cursor): folded, it is two lines without summary, photos, abstract or thread boxes, and the choice is remembered per item. **compact** in the feed bar sets the default for the whole feed (everything folded), and any item can still be unfolded by hand; inside thread boxes each post folds with *more* / *less* too. In **messages**, clicking a card's header folds it to one line, *fold all* / *unfold all* does them all, and folded cards stay folded in that browser.
 
 ## Settings (the gear)
 
