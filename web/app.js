@@ -1048,7 +1048,7 @@ async function addOrSearch() {
     if (!rs.length) { $('#results').innerHTML = '<div class="meta">no channels found</div>'; return; }
     $('#results').innerHTML = rs.map(r => `<div class="person" data-kind="yt" data-id="${esc(r.id)}">
       ${r.avatar ? `<img class="av" src="/img?u=${encodeURIComponent(r.avatar)}" alt="" loading="lazy">` : '<div class="av">yt</div>'}
-      <div><div class="nm">${esc(r.name)}<span class="h">${esc(r.handle)}${r.subs ? ' · ' + esc(r.subs) : ''}</span></div><div class="d">${esc(r.desc)}</div></div>
+      <div><div class="nm"><button class="src" data-src="yt|${esc(r.id)}" title="the channel's recent videos">${esc(r.name)}</button><span class="h">${esc(r.handle)}${r.subs ? ' · ' + esc(r.subs) : ''}</span></div><div class="d">${esc(r.desc)}</div></div>
       <div class="pacts">${r.following ? '<span class="meta">following</span>' : `<button class="solid" data-a="follow" data-name="${esc(r.name)}">follow</button>`}</div></div>`).join('');
   } catch (e) { $('#results').innerHTML = `<div class="warn">${esc(e.message)}</div>`; }
 }

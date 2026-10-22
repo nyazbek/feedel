@@ -2544,6 +2544,13 @@ def source_payload(kind, id_):
     followed = sub is not None
     if followed:
         items = [it for it in STATE["items"] if it["kind"] == kind and it.get("cid") == sub["id"]]
+        if not items and not sub.get("muted"):  # just followed, or never fetched: fetch on the spot rather than show an empty page
+            try:
+                items = {"yt": fetch_channel, "tw": tw_fetch_user, "rss": fetch_rss, "arxiv": fetch_arxiv}[kind](sub) or []
+                if items:
+                    merge_items(items)
+            except Exception as ex:
+                sub["error"] = str(ex)
     else:
         if kind == "yt":
             info = yt_channel_info(id_)
