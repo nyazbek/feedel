@@ -1689,20 +1689,23 @@ def merge_items(items):
         merged.sort(key=lambda it: -(it.get("ts") or 0))
         STATE["items"] = merged[: max(5000, 10 * int(CONFIG.get("max_items") or 400))]
 
-def refresh(force=False):
+def refresh(force=False, kinds=None):
     """Fetch every source due and merge what comes back into the feed as each one finishes. `force` (the refresh
     button) also fetches the quiet YouTube channels adaptive polling would skip this time, and retries a browser
-    sync that is waiting out its hour."""
+    sync that is waiting out its hour. `kinds` limits the round to those kinds (the refresh button on one tab)."""
     with LOCK:
         if STATE["refreshing"]:
             STATE["rerun"] = True  # something changed mid-refresh (e.g. an import): go again when done
             STATE["rerun_force"] = STATE.get("rerun_force", False) or force
+            prev = STATE.get("rerun_kinds", "unset")  # a round for everything absorbs a round for one kind, not the other way
+            STATE["rerun_kinds"] = None if kinds is None or prev is None else sorted(set(kinds) | set(prev if prev != "unset" else []))
             return
         STATE["refreshing"] = True
     try:
         t0 = time.time()
-        log("refreshing…" + (" (everything, on request)" if force else ""))
-        sync_accounts(force)
+        log("refreshing…" + (f" ({', '.join(KIND_NAMES[k] for k in kinds)}, on request)" if kinds else " (everything, on request)" if force else ""))
+        if not kinds or "yt" in kinds:
+            sync_accounts(force)
         threading.Thread(target=zulip_fetch_stream, daemon=True).start()
         threading.Thread(target=zulip_fetch_dms, daemon=True).start()
         threading.Thread(target=ig_fetch_dms, daemon=True).start()
@@ -1712,9 +1715,11 @@ def refresh(force=False):
             for k, s in all_subs():
                 if k == "yt" and s.get("id"):
                     s["newest"] = max(s.get("newest") or 0, newest.get((k, s["id"])) or 0) or None
-            subs = [(k, s) for k, s in all_subs() if not s.get("muted") or k == "yt"]
+            subs = [(k, s) for k, s in all_subs() if (not s.get("muted") or k == "yt") and (not kinds or k in kinds)]
             jobs = [(k, s) for k, s in subs if force or due(k, s, t0)]
-            jobs.sort(key=lambda ks: ks[0] == "yt")  # X, feeds and arXiv first: a handful of sources, each a chip of its own
+            # X, feeds and arXiv first (a handful of sources, each a chip of its own); within a kind the sources that
+            # posted most recently go first, so what is new is on the page early and a stopped round loses the quiet ones
+            jobs.sort(key=lambda ks: (ks[0] == "yt", -(ks[1].get("newest") or 0)))
         skipped = len(subs) - len(jobs)
 
         def do(kind, sub):
@@ -1768,8 +1773,9 @@ def refresh(force=False):
             STATE["refreshing"] = False
             rerun = STATE.pop("rerun", False)
             rerun_force = STATE.pop("rerun_force", False)
+            rerun_kinds = STATE.pop("rerun_kinds", None)
     if rerun:
-        refresh(rerun_force)
+        refresh(rerun_force, rerun_kinds)
 
 def refresh_loop():
     while True:
@@ -1872,10 +1878,29 @@ def visible_items():
             per[(it["kind"], it["cid"])] += 1
             out.append({**it, "tags": sub.get("tags", []), "author": sub.get("name") or it["author"]})
         out = group_threads(out)
-        cap = int(CONFIG.get("max_items", 400))  # a big category announces hundreds of papers a day: they get their own cap
-        rest, pap = [it for it in out if it["kind"] != "arxiv"][:cap], [it for it in out if it["kind"] == "arxiv"][:max(cap, 2000)]
-        keep = {id(it) for it in rest} | {id(it) for it in pap}
+        # the cap is per kind: three hundred X accounts must not push the day's videos out of the feed
+        cap = int(CONFIG.get("max_items", 400))
+        caps = {"yt": cap, "tw": cap, "rss": cap, "ig": cap, "arxiv": max(cap, 2000)}
+        seen_n = Counter()
+        keep = set()
+        for it in out:
+            if seen_n[it["kind"]] < caps.get(it["kind"], cap):
+                seen_n[it["kind"]] += 1
+                keep.add(id(it))
         return [it for it in out if id(it) in keep]
+
+PAGE = 120  # items of each kind the page gets at first; "load more" asks for the next slice
+
+def page_items(limits):
+    """The feed as the page shows it: per kind, the newest `limits[kind]` items (PAGE by default) and how many
+    there are in all, so the page can offer "load more" without carrying thousands of posts around."""
+    out, total = [], Counter()
+    for it in visible_items():
+        k = it["kind"]
+        total[k] += 1
+        if total[k] <= int(limits.get(k) or (2000 if k == "arxiv" else PAGE)):  # papers have their own day windows: all of them, always
+            out.append(it)
+    return out, dict(total)
 
 def settings_payload():
     z = CONFIG.get("zulip") or {}
@@ -1893,10 +1918,11 @@ def settings_payload():
             "window_libs_missing": window_libs_missing(), "in_window": "show" in WINDOW,
             **CONFIG["ui"]}
 
-def items_payload():
+def items_payload(limits=None):
     with LOCK:
         tags = sorted({t for _, s in all_subs() for t in s.get("tags", [])})
-        return {"items": visible_items(), "errors": STATE["errors"], "last_refresh": STATE["last_refresh"],
+        items, total = page_items(limits or {})
+        return {"items": items, "total": total, "page": PAGE, "errors": STATE["errors"], "last_refresh": STATE["last_refresh"],
                 "refreshing": STATE["refreshing"], "seen": list(SEEN_STATE["seen"]), "saved": list(SEEN_STATE["saved"]),
                 "saved_items": [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)],
                 "tags": tags, "counts": {k: len(sub_list(k)) for k in KINDS},
@@ -4692,8 +4718,14 @@ class Handler(BaseHTTPRequestHandler):
                 name = "index.html" if p.path == "/" else p.path[1:]
                 with open(os.path.join(WEB, name), "rb") as f:
                     return self._send(f.read(), MIME[os.path.splitext(name)[1]])
-            if p.path == "/api/items":
-                return self._send(items_payload())
+            if p.path == "/api/items":  # ?limits=tw:240,yt:120 — how many of each kind the page is showing
+                limits = {}
+                for part in q.get("limits", [""])[0].split(","):
+                    if ":" in part:
+                        k, n = part.split(":", 1)
+                        if n.isdigit():
+                            limits[k] = int(n)
+                return self._send(items_payload(limits))
             if p.path == "/api/subs":
                 return self._send(subs_payload())
             if p.path == "/api/unfollowed":
@@ -4834,8 +4866,9 @@ class Handler(BaseHTTPRequestHandler):
         if p.path == "/mcp":
             return self.do_mcp()
         try:
-            if p.path == "/api/refresh":
-                threading.Thread(target=refresh, args=(True,), daemon=True).start()
+            if p.path == "/api/refresh":  # ?kind=tw refreshes that kind only (the refresh button on one tab)
+                kind = q.get("kind", [""])[0]
+                threading.Thread(target=refresh, args=(True, [kind] if kind in KINDS else None), daemon=True).start()
                 return self._send("ok", "text/plain")
             if p.path == "/api/play" and vid:
                 mark([vid], "seen", True)

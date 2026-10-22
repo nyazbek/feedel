@@ -4,7 +4,9 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const KIND_LABEL = { yt: 'videos', tw: 'tweets', rss: 'posts', arxiv: 'papers', ig: 'reels' };
 const KIND_ONE = { yt: 'channel', tw: 'account', rss: 'feed', arxiv: 'query' };
 
-let view = 'feed', kindFilter = 'all', tagFilter = null, paperWindow = 1, axResults = null, feedQuery = '', ytResults = null;
+let view = 'feed', kindFilter = 'yt', tagFilter = null, paperWindow = 1, axResults = null, feedQuery = '', ytResults = null;
+try { const k = localStorage.getItem('kind'); if (['yt', 'tw', 'rss', 'arxiv'].includes(k)) kindFilter = k; } catch (e) { /* ignore */ }
+const limits = {};  // kind → how many items of it the page is showing; "load more" raises it
 let paperTypes = { new: true, cross: true, replace: false };  // what arXiv announced; replacements are off until asked for
 const ANNOUNCE_RANK = { new: 0, cross: 1, replace: 2 };
 let kwre = null;  // the keyword watches, as one regex, rebuilt at each render
@@ -95,10 +97,10 @@ function cycleTheme() {
 
 async function load(onlyIfChanged = false) {
   let d;
-  try { d = await api('/api/items'); } catch (e) { toast('server not answering: ' + e.message); return; }
+  try { d = await api('/api/items?limits=' + Object.entries(limits).map(([k, n]) => k + ':' + n).join(',')); } catch (e) { toast('server not answering: ' + e.message); return; }
   pollWhileRefreshing(d.refreshing);
   setMsgCount(d.messages_unread || 0);
-  const sig = [d.refreshing, d.last_refresh, d.errors.length, d.inbox.length, d.items.map(i => i.id).join(',')].join('|');
+  const sig = [d.refreshing, d.last_refresh, d.errors.length, d.inbox.length, JSON.stringify(d.total || {}), d.items.map(i => i.id).join(',')].join('|');
   if (onlyIfChanged && sig === loadSig) return;  // nothing new yet: leave the page alone
   loadSig = sig; data = d;
   seen.clear(); data.seen.forEach(i => seen.add(i));
@@ -432,8 +434,8 @@ function renderSource() {
 }
 
 function kindChips(active, counts, extraTags, activeTag, prefix) {
-  const chips = [`<button data-${prefix}f="all" class="${active === 'all' ? 'on' : ''}">all</button>`];
-  for (const k of ['yt', 'tw', 'rss', 'arxiv', 'ig']) if (counts[k]) chips.push(`<button data-${prefix}f="${k}" class="${active === k ? 'on' : ''}">${KIND_LABEL[k]}</button>`);
+  const chips = prefix === 'lib' ? [`<button data-${prefix}f="all" class="${active === 'all' ? 'on' : ''}">all</button>`] : [];
+  for (const k of ['yt', 'tw', 'rss', 'arxiv', 'ig']) if (counts[k] || (prefix === '' && k !== 'ig')) chips.push(`<button data-${prefix}f="${k}" class="${active === k ? 'on' : ''}">${KIND_LABEL[k]}</button>`);
   chips.push(...extraTags.map(t => `<button data-${prefix}tag="${esc(t)}" class="tag ${activeTag === t ? 'on' : ''}">${esc(t)}</button>`));
   return chips.join('');
 }
@@ -511,7 +513,9 @@ function renderFeed() {
     html += article(i);
   }
   flushPapers();
-  L.innerHTML = html + ytOffer;
+  const shown = data.items.filter(i => i.kind === kindFilter).length, total = (data.total || {})[kindFilter] || 0;
+  const more = !papers && total > shown ? `<div class="loadmore"><button id="loadmore" class="link">load more · ${shown} of ${total} ${KIND_LABEL[kindFilter] || ''}</button></div>` : '';
+  L.innerHTML = html + ytOffer + more;
 }
 
 async function searchYouTube() {
@@ -1422,7 +1426,7 @@ document.addEventListener('click', async e => {
   if ((b.id && b.id.startsWith('msg-')) || (b.dataset.a && b.dataset.a.startsWith('msg-'))) { msgClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
-  if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; ytResults = null; render(); return; }
+  if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; ytResults = null; try { if (['yt', 'tw', 'rss', 'arxiv'].includes(kindFilter)) localStorage.setItem('kind', kindFilter); } catch (e) { /* ignore */ } render(); return; }
   if (b.dataset.a === 'yt-search') { searchYouTube(); return; }
   if (b.dataset.a === 'yt-clear') { ytResults = null; render(); return; }
   if (b.dataset.a === 'disc') { openThread(b.closest('article, .topic'), b.dataset.topic, b.dataset.stream); return; }
@@ -1461,7 +1465,8 @@ document.addEventListener('click', async e => {
   if (b.id === 'theme') { cycleTheme(); return; }
   if (b.id === 'restart') { restartServer(); return; }
   if (b.id === 'linkbtn') { const f = $('#linkform'); f.hidden = !f.hidden; if (!f.hidden) $('#linkq').focus(); return; }
-  if (b.id === 'rf') { toast('refreshing…'); await api('/api/refresh', {}); setTimeout(() => load(true), 1500); return; }
+  if (b.id === 'rf') { const one = ['yt', 'tw', 'rss', 'arxiv'].includes(kindFilter); toast(one ? `refreshing ${KIND_LABEL[kindFilter]}…` : 'refreshing…'); await api('/api/refresh' + (one ? '?kind=' + kindFilter : ''), {}); setTimeout(() => load(true), 1500); return; }
+  if (b.id === 'loadmore') { limits[kindFilter] = (limits[kindFilter] || data.page || 120) + (data.page || 120); b.disabled = true; b.textContent = 'loading…'; await load(); return; }
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
