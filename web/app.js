@@ -590,11 +590,11 @@ function article(i) {
     const rt = (i.title || '').match(/^RT by (@\w+): ([\s\S]*)$/), rp = (i.title || '').match(/^R to (@\w+): ([\s\S]*)$/);
     const me = (i.author || '').replace(/^@/, '').toLowerCase();
     // the post being answered, or quoted, sits right above the post: a reply without its context is half a sentence
-    const ctx = (c, label) => c ? `<div class="ctx"><span class="meta">${label} <button class="src" data-src="tw|${esc(c.user)}" title="their profile">${esc(c.name || '@' + c.user)}</button> @${esc(c.user)}${c.media ? ' · has media' : ''} · <a href="${esc(c.link)}" target="_blank" rel="noopener">${c.ts ? ago(c.ts) + ' ago' : 'open ↗'}</a> · <button class="link" data-a="twgo" data-url="${esc(c.link)}">see it</button></span><div class="ctxt${(c.text || '').length > 300 ? ' long' : ''}">${esc(c.text)}</div>${(c.text || '').length > 300 ? '<button class="more" data-a="more">more</button>' : ''}</div>` : '';
+    const ctx = (c, label) => c ? `<div class="ctx"><span class="meta">${label} <button class="src" data-src="tw|${esc(c.user)}" title="their profile">${esc(c.name || '@' + c.user)}</button> @${esc(c.user)}${c.media ? ' · has media' : ''} · <a href="${esc(c.link)}" target="_blank" rel="noopener">${c.ts ? ago(c.ts) + ' ago' : 'open ↗'}</a> · <button class="link" data-a="twgo" data-url="${esc(c.link)}">see it</button></span><div class="ctxt${(c.text || '').length > 300 ? ' long' : ''}">${linkify(c.text, c.links)}</div>${(c.text || '').length > 300 ? '<button class="more" data-a="more">more</button>' : ''}</div>` : '';
     const context = ctx(i.parent, i.parent && i.parent.user === me ? 'continuing their thread:' : 'replying to') + ctx(i.quote, 'quoting');
-    const text = rt ? `<span class="rt">reposted ${esc(rt[1])}</span>${esc(rt[2])}` : rp ? (i.parent ? esc(rp[2]) : `<span class="rt">replying to ${esc(rp[1])}</span>${esc(rp[2])}`) : esc(i.title);
+    const text = rt ? `<span class="rt">reposted ${esc(rt[1])}</span>${linkify(rt[2], i.links)}` : rp ? (i.parent ? linkify(rp[2], i.links) : `<span class="rt">replying to ${esc(rp[1])}</span>${linkify(rp[2], i.links)}`) : linkify(i.title, i.links);
     const threadBtn = `<button data-a="twthread" class="${i.convo || i.reply_to || rp ? '' : 'sec'}">${i.thread ? 'replies' : 'thread'}</button>`;
-    const inthread = i.thread ? `<div class="inthread"><button class="link" data-a="inthread">▸ the thread goes on: ${i.thread.length} more post${i.thread.length === 1 ? '' : 's'}</button><div class="inposts">${i.thread.map((p, k) => twPost({ ...p, user: me, name: (i.author || '').replace(/^@/, ''), text: (p.title || '').replace(/^R to @\w+: /, '') }, 'after', `${k + 2}/`)).join('')}</div></div>` : '';
+    const inthread = i.thread ? `<div class="inthread"><button class="link" data-a="inthread">▸ the thread goes on: ${i.thread.length} more post${i.thread.length === 1 ? '' : 's'}</button><div class="inposts">${i.thread.map((p, k) => twPost({ ...p, user: me, name: (i.author || '').replace(/^@/, ''), text: (p.title || '').replace(/^R to @\w+: /, ''), links: p.links }, 'after', `${k + 2}/`)).join('')}</div></div>` : '';
     const long = (i.title || '').length > 420;
     return `<article class="${cls}${thumb ? ' withthumb' : ''}" data-id="${esc(i.id)}">${thumb}<div>
       <div class="by">${srcBtn(i)} · ${i.thread ? `a thread of ${i.thread.length + 1} posts · started ${ago(i.thread_started)} ago · last ${ago(i.ts)} ago` : ago(i.ts) + ' ago'}${tags}</div>${context}
@@ -705,12 +705,27 @@ function photos(list) {
   if (!list || !list.length || (data && data.settings && data.settings.hide_thumbnails)) return '';
   return `<div class="photos">${list.map(u => `<a href="/img?u=${encodeURIComponent(u)}" target="_blank" rel="noopener"><img loading="lazy" src="/img?u=${encodeURIComponent(u + (u.includes('?') ? '&' : '?') + 'name=small')}" alt=""></a>`).join('')}</div>`;
 }
+// a post's text with its links as links: the ones the source named (full address behind X's shortened display text),
+// any bare address, and @mentions to the person's profile. Addresses feedel can show go to the inbox when clicked.
+function linkify(text, links) {
+  let h = esc(text || '');
+  const used = new Set();
+  for (const l of links || []) {
+    const t = esc(l.text || ''), u = esc(l.url || '');
+    if (!u || !t || t.startsWith('@') || used.has(t) || !h.includes(t)) continue;
+    h = h.split(t).join(`<a class="tl" href="${u}" target="_blank" rel="noopener" title="${u}">${t}</a>`); used.add(t);
+  }
+  h = h.replace(/(^|[^"'>=\w])(https?:\/\/[^\s<]+)/g, (m, pre, u) => pre + `<a class="tl" href="${u}" target="_blank" rel="noopener" title="${u}">${u.replace(/^https?:\/\//, '').replace(/\/$/, '').slice(0, 60)}${u.length > 68 ? '…' : ''}</a>`);
+  h = h.replace(/(^|[^\w/.])@(\w{1,15})\b/g, (m, pre, user) => pre + `<button class="src mention" data-src="tw|${user}" title="their profile">@${user}</button>`);
+  return h;
+}
+function feedelOpens(url) { return /^https?:\/\/(www\.|m\.|mobile\.)?(youtube\.com|youtu\.be|x\.com|twitter\.com|arxiv\.org|instagram\.com)\//i.test(url) || /substack\.com\//i.test(url); }
 function twPost(t, cls = '', num = '', tag = '') {
   const vid = t.video ? `<button data-a="tw-play" data-url="${esc(t.mp4 || t.link)}">▶ play${t.dur ? ' · ' + dur(t.dur) : ''}</button>` : (t.media && !(t.photos || []).length ? '<span class="meta">has media · </span>' : '');
   const go = cls === 'cur' ? '' : `<button data-a="twgo" data-url="${esc(t.link)}" class="sec">open</button>`;
   const long = (t.text || '').length > 420;
   return `<div class="twpost ${cls}"><div class="who">${num ? `<span class="n">${num}</span> ` : ''}<button class="src" data-src="tw|${esc(t.user)}" title="their profile"><b>${esc(t.name || '@' + t.user)}</b></button> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a>${tag ? ' · ' + tag : ''}</span></div>
-    <div class="tweet${long ? ' long' : ''}">${esc(t.text)}</div><button class="more${long ? ' always' : ''}" data-a="more">more</button>${photos(t.photos)}${vid || go ? `<div class="acts">${vid}${go}</div>` : ''}</div>`;
+    <div class="tweet${long ? ' long' : ''}">${linkify(t.text, t.links)}</div><button class="more${long ? ' always' : ''}" data-a="more">more</button>${photos(t.photos)}${vid || go ? `<div class="acts">${vid}${go}</div>` : ''}</div>`;
 }
 const twOpen = new Map();  // article id → {stack, cur}: open X thread boxes survive a re-render of the list
 async function openTwThread(art, url, push, restore) {
@@ -1417,6 +1432,8 @@ async function takeToClaude(id) {
 /* ------------------------------------------------------------ events */
 
 document.addEventListener('click', async e => {
+  const tl = e.target.closest('a.tl');
+  if (tl && feedelOpens(tl.href)) { e.preventDefault(); try { await api('/api/inbox', { url: tl.href, via: 'post' }); toast('in your inbox'); } catch (err) { toast(err.message + ' — opening it in the browser', 5000); window.open(tl.href, '_blank', 'noopener'); } return; }
   const who = e.target.closest('.msgcard > .who[data-a="msg-fold"]');
   if (who && !e.target.closest('a, button')) { const card = who.parentElement; foldMsg(card, !card.classList.contains('folded')); return; }
   const b = e.target.closest('button');

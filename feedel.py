@@ -1089,6 +1089,25 @@ def yt_older_all(limit=24):
 
 TW_GOOD = {"inst": None}  # the Nitter instance that answered last; tried first, since the dead ones cost seconds per account
 
+def tw_links_from_html(fragment):
+    """The links in a Nitter-rendered fragment (an RSS description, a post's content): [{url, text}], with Nitter's
+    own hosts turned back into x.com, and without image and hashtag anchors (mentions are kept: the page links them)."""
+    out, seen = [], set()
+    for href, inner in re.findall(r'<a href="([^"]+)"[^>]*>(.*?)</a>', fragment or "", re.S):
+        href = html.unescape(href)
+        text = html.unescape(re.sub(r"<[^>]+>", "", inner)).strip()
+        if not text or text.startswith("#") or "/pic/" in href or href.startswith("#"):
+            continue
+        host = urlparse(href).netloc.lower()
+        if host.startswith("nitter.") or host in ("xcancel.com", "nitter.net") or host in {urlparse(i).netloc.lower() for i in CONFIG["twitter"].get("nitter_instances", [])}:
+            href = re.sub(r"^https?://[^/]+", "https://x.com", href).split("#")[0]
+            text = re.sub(r"^(?:https?://)?[^/]+/", "x.com/", text).split("#")[0]  # a quoted post's link, shown as x.com/…
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append({"url": href, "text": text[:120]})
+    return out[:12]
+
 def tw_fetch_user(sub):
     user = sub["id"]
     instances = list(CONFIG["twitter"].get("nitter_instances", []))
@@ -1111,7 +1130,7 @@ def tw_fetch_user(sub):
                 link = re.sub(r"^https?://[^/]+", "https://x.com", it.findtext("link") or "").split("#")[0]
                 creator = it.findtext("{http://purl.org/dc/elements/1.1/}creator") or "@" + user
                 items.append({"kind": "tw", "id": link, "cid": user, "title": it.findtext("title") or "",
-                              "author": creator, "ts": ts, "desc": "", "link": link})
+                              "author": creator, "ts": ts, "desc": "", "link": link, "links": tw_links_from_html(it.findtext("description") or "")})
             def media_of(it):  # videos in posts from people you follow are pre-approved: show them
                 m = re.search(r"/status/(\d+)", it["id"])
                 return tw_syndication(m.group(1)) if m else None
@@ -1143,6 +1162,17 @@ def tw_token(tid):
         frac -= d
     return (s + "." + f).replace("0", "").replace(".", "")
 
+def tw_expand_links(text, entities):
+    """X's syndication text carries t.co links; its entities say where they go. The text gets the real address, and
+    the links come back as [{url, text}] with the display text X shows."""
+    links = []
+    for u in (entities or {}).get("urls") or []:
+        short, full, disp = u.get("url") or "", u.get("expanded_url") or "", u.get("display_url") or ""
+        if short and full:
+            text = text.replace(short, full)
+            links.append({"url": full, "text": disp or full})
+    return text, links
+
 def _tw_context(t):
     """The post a reply answers, or the post a quote-post quotes, as the page shows it above the post itself."""
     if not isinstance(t, dict) or not t.get("id_str"):
@@ -1150,14 +1180,15 @@ def _tw_context(t):
     u = t.get("user") or {}
     user = (u.get("screen_name") or "").lower()
     media = [m for m in t.get("mediaDetails", []) if m.get("type")] or t.get("photos") or []
-    return {"id": t["id_str"], "user": user, "name": u.get("name", ""), "text": html.unescape(t.get("text", "")),
+    text, links = tw_expand_links(html.unescape(t.get("text", "")), t.get("entities"))
+    return {"id": t["id_str"], "user": user, "name": u.get("name", ""), "text": text, "links": links,
             "link": f"https://x.com/{user or 'i'}/status/{t['id_str']}", "ts": iso_ts(t.get("created_at")), "media": bool(media)}
 
 def tw_syndication(tid):
     """One public post as JSON (no login): text, author, time, photos and the video's mp4 variants.
     Cached forever by id since a post's media does not change; failures are not cached."""
     cached = CACHE["tweets"].get(tid)
-    if cached is not None and "parent" in cached:  # entries from before the reply/quote fields existed are refreshed once
+    if cached is not None and "parent" in cached and "links" in cached:  # entries from before the reply/quote/links fields existed are refreshed once
         return cached
     try:
         d = json.loads(fetch(f"https://cdn.syndication.twimg.com/tweet-result?id={tid}&token={tw_token(tid)}",
@@ -1166,7 +1197,8 @@ def tw_syndication(tid):
         return None
     if not isinstance(d, dict) or not d.get("id_str"):
         return None
-    out = {"video": False, "text": html.unescape(d.get("text", "")), "name": d.get("user", {}).get("name", ""),
+    text, links = tw_expand_links(html.unescape(d.get("text", "")), d.get("entities"))
+    out = {"video": False, "text": text, "links": links, "name": d.get("user", {}).get("name", ""),
            "user": (d.get("user", {}).get("screen_name") or "").lower(), "ts": iso_ts(d.get("created_at")),
            "photos": [p.get("url") for p in d.get("photos", []) if p.get("url")][:4],
            "reply_to": d.get("in_reply_to_status_id_str") or ((d.get("parent") or {}).get("id_str")) or "",
@@ -1208,7 +1240,7 @@ def tw_nitter_item(block, tid=None):
                 pass
     return {"id": lm.group(2), "link": f"https://x.com/{lm.group(1)}/status/{lm.group(2)}",
             "user": (um.group(1) if um else lm.group(1)).lower(), "name": html.unescape(nm.group(1)) if nm else "",
-            "text": strip_html(cm.group(1), 2000) if cm else "", "ts": ts or time.time(),
+            "text": strip_html(cm.group(1), 2000) if cm else "", "links": tw_links_from_html(cm.group(1)) if cm else [], "ts": ts or time.time(),
             "media": bool(re.search(r'class="attachments"', block))}
 
 def tw_nitter_items(seg):
@@ -1961,7 +1993,7 @@ def group_threads(items):
         s = sid(it["id"]) if it["kind"] == "tw" else None
         if s in kids_of:
             kids = sorted(kids_of[s], key=lambda x: int(sid(x["id"])))
-            it = {**it, "thread": [{k: x.get(k) for k in ("id", "link", "title", "ts", "video", "mp4", "thumb", "dur", "photos") if x.get(k) is not None} for x in kids],
+            it = {**it, "thread": [{k: x.get(k) for k in ("id", "link", "title", "ts", "video", "mp4", "thumb", "dur", "photos", "links") if x.get(k) is not None} for x in kids],
                   "thread_ids": [x["id"] for x in kids], "thread_started": it["ts"], "ts": max([it["ts"]] + [x["ts"] for x in kids])}
         out.append(it)
     out.sort(key=lambda x: -(x.get("ts") or 0))
