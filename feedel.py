@@ -4393,7 +4393,10 @@ def briefing_run(trigger="by hand"):
     """Run the briefing now: Claude Code, headless, with only feedel's tools allowed. Blocks until it is done."""
     cli = claude_cli()
     b = briefing_cfg()
-    rec = {"at": int(time.time()), "trigger": trigger, "ok": False, "output": ""}
+    prev = b.get("last_run") or {}
+    same_day = time.strftime("%Y-%m-%d", time.localtime(prev.get("at") or 0)) == time.strftime("%Y-%m-%d")
+    rec = {"at": int(time.time()), "trigger": trigger, "ok": False, "output": "", "tries": (prev.get("tries") or 0) + 1 if same_day else 1}
+    log(f"briefing ({trigger}): starting")
     if not cli:
         rec["output"] = "Claude Code is not installed (no `claude` program found)"
     else:
@@ -4418,18 +4421,29 @@ def briefing_run(trigger="by hand"):
     log(f"briefing ({trigger}): {'ok' if rec['ok'] else 'failed'}: {rec['output'][:120]}")
     return rec
 
+BRIEFING_STARTED = time.time()
+
 def briefing_due(now=None):
+    """Due once the configured time has passed today and no run has happened today, so a copy that was not running
+    at that minute (the computer was off, or feedel was started later) catches up; a scheduled run that failed is
+    retried an hour later, three times at most. The first two minutes after start are left to the feed's refresh."""
     b = briefing_cfg()
     if not b.get("on"):
         return False
     now = now or time.localtime()
     hh, mm = (b.get("time") or "08:00").split(":")[:2]
-    if (now.tm_hour, now.tm_min) != (int(hh), int(mm)):
+    if (now.tm_hour, now.tm_min) < (int(hh), int(mm)):
         return False
     if b.get("days") == "weekdays" and now.tm_wday >= 5:
         return False
+    if time.time() - BRIEFING_STARTED < 120:
+        return False
     last = b.get("last_run") or {}
-    return time.strftime("%Y-%m-%d", time.localtime(last.get("at") or 0)) != time.strftime("%Y-%m-%d", now)
+    today = time.strftime("%Y-%m-%d", now)
+    if time.strftime("%Y-%m-%d", time.localtime(last.get("at") or 0)) != today:
+        return True
+    return (not last.get("ok") and last.get("trigger") == "schedule" and (last.get("tries") or 1) < 3
+            and time.time() - (last.get("at") or 0) > 3600)
 
 def briefing_loop():
     """Once a minute: when it is the configured time and today's briefing has not run, run it."""
