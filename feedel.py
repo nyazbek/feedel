@@ -441,11 +441,16 @@ def prune_items(db):
     db.execute("DELETE FROM items WHERE fetched < ? AND ext_id NOT IN (SELECT item_id FROM marks WHERE saved_at IS NOT NULL)",
                (time.time() - days * 86400,))
 
+ITEM_CAP = {"yt": 4000, "tw": 4000, "rss": 2000, "arxiv": 6000, "ig": 500}  # items of each kind kept in memory (the DB keeps 90 days)
+
 def load_items(limit=None):
     """Newest items first, with what the cache now knows about durations and Shorts applied to videos."""
-    limit = limit or max(5000, 10 * int(CONFIG.get("max_items") or 400))
+    # the newest of each kind, not the newest overall: a category's hundreds of papers a day would push a channel's
+    # older videos (fetched on request) out of memory, and with them out of every page
     with LOCK:
-        rows = DB.execute("SELECT payload_json FROM items ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+        rows = []
+        for k in KINDS + ("ig",):
+            rows += DB.execute("SELECT payload_json FROM items WHERE kind = ? ORDER BY ts DESC LIMIT ?", (k, limit or ITEM_CAP.get(k, 4000))).fetchall()
     out = []
     for r in rows:
         it = json.loads(r["payload_json"])
@@ -453,6 +458,7 @@ def load_items(limit=None):
             it["dur"] = CACHE["durations"].get(it["id"], it.get("dur"))
             it["short"] = CACHE["shorts"].get(it["id"], it.get("short", False))
         out.append(it)
+    out.sort(key=lambda it: -(it.get("ts") or 0))  # the kinds were read one by one
     return out
 
 def inbox_list():
@@ -956,6 +962,128 @@ def fetch_channel(sub):
         r["dur"] = CACHE["durations"].get(r["id"])
         r["short"] = CACHE["shorts"].get(r["id"], False)
     return raw
+
+def yt_rel_ts(text):
+    """'3 years ago' / 'Streamed 2 months ago' → an approximate timestamp; None when it is not a relative time."""
+    m = re.search(r"(\d+)\s*(seconds?|minutes?|hours?|days?|weeks?|months?|years?|mo|[smhdwy])\s+ago", text or "")
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2)
+    unit = {"s": "second", "m": "minute", "h": "hour", "d": "day", "w": "week", "mo": "month", "y": "year"}.get(unit, unit.rstrip("s"))
+    secs = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 7 * 86400, "month": 30 * 86400, "year": 365 * 86400}[unit]
+    return time.time() - n * secs
+
+def yt_lockup_items(node, cid, author):
+    """The videos listed in a channel page (or a continuation of it) as feed items, and the token for the next page."""
+    items, tokens = [], []
+    for lv in walk(node, "lockupViewModel"):
+        vid = lv.get("contentId")
+        if not vid:
+            m = re.search(r"/vi/([\w-]{11})/", json.dumps(lv.get("contentImage", {})))
+            vid = m.group(1) if m else None
+        if not vid or len(vid) != 11:
+            continue
+        meta = lv.get("metadata", {}).get("lockupMetadataViewModel", {})
+        title = (meta.get("title") or {}).get("content") or ""
+        texts = [t.get("content", "") for t in walk(meta, "text") if isinstance(t, dict)]
+        ts = next((yt_rel_ts(t) for t in texts if yt_rel_ts(t)), None)
+        dur = None
+        for b in walk(lv, "thumbnailBadgeViewModel"):
+            s = parse_duration(b.get("text", ""))
+            if s is not None:
+                dur = s
+                break
+        items.append({"kind": "yt", "id": vid, "cid": cid, "title": title, "author": author, "ts": ts or 0, "desc": "", "dur": dur,
+                      "short": CACHE["shorts"].get(vid, False)})
+    for vr in walk(node, "videoRenderer"):  # older layout
+        vid = vr.get("videoId")
+        if vid:
+            items.append({"kind": "yt", "id": vid, "cid": cid, "title": rtext(vr.get("title")), "author": author,
+                          "ts": yt_rel_ts(rtext(vr.get("publishedTimeText"))) or 0, "desc": "", "dur": parse_duration(rtext(vr.get("lengthText"))),
+                          "short": CACHE["shorts"].get(vid, False)})
+    # the page carries several continuations (the "about" popup among them): only the one inside the video grid, or
+    # inside a continuation's own items, leads to older videos
+    scopes = list(walk(node, "richGridRenderer")) or [v for a in walk(node, "appendContinuationItemsAction") for v in [a]] or [node]
+    for scope in scopes:
+        for c in walk(scope, "continuationItemRenderer"):
+            for tok in walk(c, "token"):
+                if isinstance(tok, str):
+                    tokens.append(tok)
+    return items, (tokens[-1] if tokens else None)
+
+def yt_older(cid, pages=1):
+    """Older videos of a channel: the first call reads the channel's videos page, later ones ask YouTube for the
+    next page through the continuation the previous one carried (no login). What comes back is merged into the
+    feed for followed channels; the items are returned either way. Durations go to the cache."""
+    sub = find_sub("yt", cid)
+    author = (sub or {}).get("name") or cid
+    cur = CACHE.setdefault("ytmore", {}).get(cid) or {}
+    got, more = [], None
+    for _ in range(max(1, pages)):
+        if not cur.get("token"):
+            if cur.get("done"):
+                break
+            page = yt_page(f"https://www.youtube.com/channel/{cid}/videos")
+            key_m = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', page)
+            ver_m = re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', page)
+            items, token = yt_lockup_items(yt_initial_data(page), cid, author)
+            cur = {"token": token, "key": key_m.group(1) if key_m else "", "ver": ver_m.group(1) if ver_m else "2.20241001.00.00", "pages": 0}
+            # the page itself only repeats what the feed has (its latest uploads); when it holds nothing new, go on to the continuation
+            known = {it["id"] for it in STATE["items"] if it["kind"] == "yt" and it.get("cid") == cid}
+            fresh = [it for it in items if it["id"] not in known]
+            if fresh or not token:
+                got += fresh
+                if not token:
+                    cur["done"] = True
+                    break
+                continue
+        headers = {"Content-Type": "application/json", "Origin": "https://www.youtube.com", "X-Origin": "https://www.youtube.com",
+                   "X-Youtube-Client-Name": "1", "X-Youtube-Client-Version": cur["ver"], "User-Agent": UA}
+        body = json.dumps({"context": {"client": {"clientName": "WEB", "clientVersion": cur["ver"], "hl": "en"}}, "continuation": cur["token"]}).encode()
+        d = json.loads(fetch(f"https://www.youtube.com/youtubei/v1/browse?key={cur['key']}&prettyPrint=false", timeout=20, data=body, headers=headers))
+        items, token = yt_lockup_items(d, cid, author)
+        cur["token"], cur["pages"] = token, cur.get("pages", 0) + 1
+        got += items
+        if not token:
+            cur["done"] = True
+            break
+    more = bool(cur.get("token")) and not cur.get("done")
+    cache_put("ytmore", cid, cur)
+    # the feed's own copy of a video wins (exact time from the RSS); the rest are new, with approximate times
+    seen_ids, out = set(), []
+    for it in got:
+        if it["id"] in seen_ids:
+            continue
+        seen_ids.add(it["id"])
+        if it.get("dur") is not None:
+            cache_put("durations", it["id"], it["dur"])
+        out.append(it)
+    known = {it["id"]: it for it in STATE["items"] if it["kind"] == "yt" and it.get("cid") == cid}
+    out = [known.get(it["id"], it) for it in out]
+    new = [it for it in out if it["id"] not in known]
+    if sub and new:
+        merge_items(new)
+    return {"items": out, "new": len(new), "more": more}
+
+def yt_older_all(limit=24):
+    """One page of older videos for the channels that posted most recently (the feed's own "load more")."""
+    with LOCK:
+        subs = sorted([s for s in yt_subs() if s.get("id") and not s.get("muted")], key=lambda s: -(s.get("newest") or 0))[:limit]
+    new, errors = 0, 0
+    def one(s):
+        try:
+            return yt_older(s["id"])["new"]
+        except Exception as ex:
+            log("  older videos", s.get("name") or s["id"], ex)
+            return -1
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for n in ex.map(one, subs):
+            if n < 0:
+                errors += 1
+            else:
+                new += n
+    save_cache()
+    return {"channels": len(subs), "new": new, "errors": errors}
 
 # ---------------------------------------------------------------- twitter
 
@@ -1687,7 +1815,13 @@ def merge_items(items):
         fresh = {key(it): it for it in items}
         merged = [it for it in STATE["items"] if key(it) not in fresh] + list(fresh.values())
         merged.sort(key=lambda it: -(it.get("ts") or 0))
-        STATE["items"] = merged[: max(5000, 10 * int(CONFIG.get("max_items") or 400))]
+        per = Counter()
+        kept = []
+        for it in merged:  # the same per-kind cap as load_items(), so what was just merged is not cut by another kind's bulk
+            per[it["kind"]] += 1
+            if per[it["kind"]] <= ITEM_CAP.get(it["kind"], 4000):
+                kept.append(it)
+        STATE["items"] = kept
 
 def refresh(force=False, kinds=None):
     """Fetch every source due and merge what comes back into the feed as each one finishes. `force` (the refresh
@@ -4960,6 +5094,15 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/inbox/remove":
                 inbox_remove(str(body.get("url", "")))
                 return self._send({"ok": True})
+            if p.path == "/api/yt/older":  # older videos of one channel (the channel page's "load more")
+                cid = str(body.get("id", "")).strip()
+                if not re.fullmatch(r"UC[\w-]{22}", cid):
+                    return self._send({"error": "not a channel id"}, code=400)
+                r = yt_older(cid, int(body.get("pages") or 1))
+                save_cache()
+                return self._send(r)
+            if p.path == "/api/yt/older_all":  # one page of older videos for the most recently active channels (the videos tab's "load more")
+                return self._send(yt_older_all(int(body.get("limit") or 24)))
             if p.path == "/api/claude/mcp":
                 return self._send(mcp_install(bool(body.get("on", True))))
             if p.path == "/api/claude/briefing":

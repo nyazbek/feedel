@@ -430,7 +430,8 @@ function renderSource() {
     <div class="row">${f ? `<button class="link" data-a="mute">${s.muted ? 'unmute' : 'mute'}</button><button class="link" data-a="unfollow">unfollow</button>` : `<button class="solid" data-a="src-follow">follow</button>`}
       ${s.muted ? '<span class="meta">muted: followed, but hidden from the feed</span>' : ''}</div>${fields}</div></div>`;
   $('#srcmeta').textContent = `${src.count} item${src.count === 1 ? '' : 's'}${f ? '' : ' · not followed'}`;
-  $('#srclist').innerHTML = src.items.length ? src.items.map(article).join('') : '<div class="empty">nothing fetched yet</div>';
+  $('#srclist').innerHTML = (src.items.length ? src.items.map(article).join('') : '<div class="empty">nothing fetched yet</div>')
+    + (k === 'yt' && src.more !== false ? `<div class="loadmore"><button id="srcmore" class="link">load more · older videos of this channel</button></div>` : '');
 }
 
 function kindChips(active, counts, extraTags, activeTag, prefix) {
@@ -514,7 +515,8 @@ function renderFeed() {
   }
   flushPapers();
   const shown = data.items.filter(i => i.kind === kindFilter).length, total = (data.total || {})[kindFilter] || 0;
-  const more = !papers && total > shown ? `<div class="loadmore"><button id="loadmore" class="link">load more · ${shown} of ${total} ${KIND_LABEL[kindFilter] || ''}</button></div>` : '';
+  const more = !papers && total > shown ? `<div class="loadmore"><button id="loadmore" class="link">load more · ${shown} of ${total} ${KIND_LABEL[kindFilter] || ''}</button></div>`
+    : kindFilter === 'yt' && !q ? `<div class="loadmore"><button id="ytolder" class="link">load more · older videos from your channels</button></div>` : '';
   L.innerHTML = html + ytOffer + more;
 }
 
@@ -1426,6 +1428,17 @@ document.addEventListener('click', async e => {
   if ((b.id && b.id.startsWith('msg-')) || (b.dataset.a && b.dataset.a.startsWith('msg-'))) { msgClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
+  if (b.id === 'srcmore') {
+    b.disabled = true; b.textContent = 'asking YouTube…';
+    try {
+      const r = await api('/api/yt/older', { id: src.sub.id });
+      const have = new Set(src.items.map(i => i.id));
+      src.items = src.items.concat(r.items.filter(i => !have.has(i.id))).sort((x, y) => (y.ts || 0) - (x.ts || 0));
+      src.count = src.items.length; src.more = r.more; renderSource();
+      if (!r.items.filter(i => !have.has(i.id)).length) toast(r.more ? 'nothing new on that page; try again for the next one' : 'that is the whole channel');
+    } catch (e) { toast(e.message, 5000); b.disabled = false; b.textContent = 'load more · older videos of this channel'; }
+    return;
+  }
   if (b.dataset.f) { kindFilter = b.dataset.f; if (kindFilter !== 'arxiv') axResults = null; ytResults = null; try { if (['yt', 'tw', 'rss', 'arxiv'].includes(kindFilter)) localStorage.setItem('kind', kindFilter); } catch (e) { /* ignore */ } render(); return; }
   if (b.dataset.a === 'yt-search') { searchYouTube(); return; }
   if (b.dataset.a === 'yt-clear') { ytResults = null; render(); return; }
@@ -1466,6 +1479,7 @@ document.addEventListener('click', async e => {
   if (b.id === 'restart') { restartServer(); return; }
   if (b.id === 'linkbtn') { const f = $('#linkform'); f.hidden = !f.hidden; if (!f.hidden) $('#linkq').focus(); return; }
   if (b.id === 'rf') { const one = ['yt', 'tw', 'rss', 'arxiv'].includes(kindFilter); toast(one ? `refreshing ${KIND_LABEL[kindFilter]}…` : 'refreshing…'); await api('/api/refresh' + (one ? '?kind=' + kindFilter : ''), {}); setTimeout(() => load(true), 1500); return; }
+  if (b.id === 'ytolder') { b.disabled = true; b.textContent = 'asking YouTube for older videos…'; try { const r = await api('/api/yt/older_all', {}); toast(`${r.new} older video${r.new === 1 ? '' : 's'} from ${r.channels} channels${r.errors ? ` (${r.errors} failed)` : ''}`, 5000); limits.yt = (limits.yt || data.page || 120) + (data.page || 120); await load(); } catch (e) { toast(e.message, 5000); } return; }
   if (b.id === 'loadmore') { limits[kindFilter] = (limits[kindFilter] || data.page || 120) + (data.page || 120); b.disabled = true; b.textContent = 'loading…'; await load(); return; }
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
