@@ -437,10 +437,22 @@ function renderSource() {
 function kindChips(active, counts, extraTags, activeTag, prefix) {
   const chips = prefix === 'lib' ? [`<button data-${prefix}f="all" class="${active === 'all' ? 'on' : ''}">all</button>`] : [];
   for (const k of ['yt', 'tw', 'rss', 'arxiv', 'ig']) if (counts[k] || (prefix === '' && k !== 'ig')) chips.push(`<button data-${prefix}f="${k}" class="${active === k ? 'on' : ''}">${KIND_LABEL[k]}</button>`);
-  chips.push(...extraTags.map(t => `<button data-${prefix}tag="${esc(t)}" class="tag ${activeTag === t ? 'on' : ''}">${esc(t)}</button>`));
+  if (prefix !== '') chips.push(...extraTags.map(t => `<button data-${prefix}tag="${esc(t)}" class="tag ${activeTag === t ? 'on' : ''}">${esc(t)}</button>`));
   return chips.join('');
 }
 
+// the tags of the kind on screen, stacked to the left of the list with how many items each one holds
+function tagRail(items) {
+  const rail = $('#tagrail'); if (!rail) return;
+  const counts = {};
+  items.forEach(i => (i.tags || []).forEach(t => { counts[t] = (counts[t] || 0) + 1; }));
+  const tags = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+  if (!tags.length && !tagFilter) { rail.hidden = true; rail.innerHTML = ''; document.querySelector('.feedbody').classList.remove('withrail'); return; }
+  rail.hidden = false; document.querySelector('.feedbody').classList.add('withrail');
+  rail.innerHTML = `<button data-tag="" class="${tagFilter ? '' : 'on'}">all<span class="n">${items.length}</span></button>` +
+    tags.map(t => `<button data-tag="${esc(t)}" class="tag ${tagFilter === t ? 'on' : ''}">${esc(t)}<span class="n">${counts[t]}</span></button>`).join('') +
+    (tagFilter && !counts[tagFilter] ? `<button data-tag="${esc(tagFilter)}" class="tag on">${esc(tagFilter)}<span class="n">0</span></button>` : '');
+}
 function renderFeed() {
   const s = data.settings;
   $('#when').textContent = data.refreshing ? 'refreshing…' : data.last_refresh ? 'updated ' + ago(data.last_refresh) + ' ago' : 'loading…';
@@ -448,8 +460,9 @@ function renderFeed() {
   const recCards = (data.recs && data.recs.cards) || [];
   const recChip = (recCards.length || kindFilter === 'recs') ? `<button data-f="recs" class="${kindFilter === 'recs' ? 'on' : ''}">from friends${recCards.length ? ' · ' + recCards.length : ''}</button>` : '';
   $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '') + inboxChip + recChip;
+  const railOff = () => { const r = $('#tagrail'); if (r) { r.hidden = true; document.querySelector('.feedbody').classList.remove('withrail'); } };
   if (kindFilter === 'recs') {
-    $('#papers').hidden = true; $('#errs').innerHTML = '';
+    railOff(); $('#papers').hidden = true; $('#errs').innerHTML = '';
     $('#list').innerHTML = recCards.length ? recCards.map(c => {
       const it = { ...c.item, cid: c.item.cid || 'rec' };
       const lines = c.by.map(b => `<div class="rec"><b>${esc(b.who)}</b>${c.for_all ? ' recommends this to everyone' : ' recommends this to you'}${b.note ? ': ' + esc(b.note) : ''} · ${ago(b.ts)} ago · ${b.thanked ? '<span>thanked</span>' : `<button data-a="thanks" data-msg="${b.msg_id}">thanks</button>`}</div>`).join('');
@@ -459,7 +472,7 @@ function renderFeed() {
     return;
   }
   if (kindFilter === 'inbox') {
-    $('#papers').hidden = true; $('#errs').innerHTML = '';
+    railOff(); $('#papers').hidden = true; $('#errs').innerHTML = '';
     $('#list').innerHTML = data.inbox.length ? data.inbox.map(i => article(i).replace('</article>', inboxRow(i) + '</article>')).join('')
       : '<div class="empty">nothing here. paste a link with <b>+ link</b>, or turn on the clipboard watcher in settings and copy one from WhatsApp.</div>';
     return;
@@ -472,6 +485,7 @@ function renderFeed() {
   document.querySelectorAll('#ptypes button').forEach(b => b.classList.toggle('on', !!paperTypes[b.dataset.pt]));
   $('#ax_clear').hidden = !axResults;
   const L = $('#list');
+  if ((papers && axResults) || ytResults) railOff();
   if (papers && axResults) {
     L.innerHTML = axResults.length ? `<div class="day">${axResults.length} results from arXiv</div>` + axResults.map(article).join('') : '<div class="empty">arXiv found nothing for that</div>';
     return;
@@ -483,8 +497,9 @@ function renderFeed() {
   }
   const q = feedQuery.toLowerCase();
   const hit = i => !q || [i.title, i.author, i.desc, ...(i.authors || []), ...(i.tags || [])].some(x => (x || '').toLowerCase().includes(q));
-  let items = data.items.filter(i => (kindFilter === 'all' || i.kind === kindFilter) && (!tagFilter || i.tags.includes(tagFilter)) && !(s.hide_seen && seen.has(i.id)) && hit(i)
-    && (i.kind !== 'arxiv' || !i.announce_type || paperTypes[i.announce_type]));
+  const ofKind = data.items.filter(i => i.kind === kindFilter && !(s.hide_seen && seen.has(i.id)) && hit(i) && (i.kind !== 'arxiv' || !i.announce_type || paperTypes[i.announce_type]));
+  tagRail(ofKind);
+  let items = ofKind.filter(i => !tagFilter || (i.tags || []).includes(tagFilter));
   let listing = null;
   if (papers && paperWindow === 1) {
     // "today's listing": the most recent announcement day among the papers you have (Friday's on a weekend).
@@ -1485,7 +1500,7 @@ document.addEventListener('click', async e => {
     talkTopics = {}; talkSearch = null; await load(); b.textContent = 'refresh'; return;
   }
   if (b.dataset.a === 'src-follow') { const s = src.sub; b.disabled = true; b.textContent = 'adding…'; try { await followRef(s.id, s.kind, s.name); await openSource(s.kind, s.id); } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'follow'; } return; }
-  if (b.dataset.tag !== undefined) { tagFilter = tagFilter === b.dataset.tag ? null : b.dataset.tag; render(); return; }
+  if (b.dataset.tag !== undefined) { tagFilter = (!b.dataset.tag || tagFilter === b.dataset.tag) ? null : b.dataset.tag; render(); return; }
   if (b.dataset.libf) { libKind = b.dataset.libf; render(); return; }
   if (b.dataset.libtag !== undefined) { libTag = libTag === b.dataset.libtag ? null : b.dataset.libtag; render(); return; }
   if (b.dataset.w !== undefined) { paperWindow = +b.dataset.w; axResults = null; render(); return; }
