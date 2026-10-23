@@ -447,11 +447,10 @@ function tagRail(items) {
   const counts = {};
   items.forEach(i => (i.tags || []).forEach(t => { counts[t] = (counts[t] || 0) + 1; }));
   const tags = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
-  if (!tags.length && !tagFilter) { rail.hidden = true; rail.innerHTML = ''; document.querySelector('.feedbody').classList.remove('withrail'); return; }
-  rail.hidden = false; document.querySelector('.feedbody').classList.add('withrail');
-  rail.innerHTML = `<button data-tag="" class="${tagFilter ? '' : 'on'}">all<span class="n">${items.length}</span></button>` +
-    tags.map(t => `<button data-tag="${esc(t)}" class="tag ${tagFilter === t ? 'on' : ''}">${esc(t)}<span class="n">${counts[t]}</span></button>`).join('') +
-    (tagFilter && !counts[tagFilter] ? `<button data-tag="${esc(tagFilter)}" class="tag on">${esc(tagFilter)}<span class="n">0</span></button>` : '');
+  if (!tags.length && !tagFilter) { rail.hidden = true; rail.innerHTML = ''; $('#view-feed').classList.remove('withrail'); return; }
+  rail.hidden = false; $('#view-feed').classList.add('withrail');
+  const btn = (t, n, on) => `<button data-tag="${esc(t)}" class="${t ? 'tag' : ''}${on ? ' on' : ''}"><span class="t">${t ? '<span class="h">#</span>' + esc(t) : 'all'}</span><span class="n">${n}</span></button>`;
+  rail.innerHTML = btn('', items.length, !tagFilter) + tags.map(t => btn(t, counts[t], tagFilter === t)).join('') + (tagFilter && !counts[tagFilter] ? btn(tagFilter, 0, true) : '');
 }
 function renderFeed() {
   const s = data.settings;
@@ -460,7 +459,7 @@ function renderFeed() {
   const recCards = (data.recs && data.recs.cards) || [];
   const recChip = (recCards.length || kindFilter === 'recs') ? `<button data-f="recs" class="${kindFilter === 'recs' ? 'on' : ''}">from friends${recCards.length ? ' · ' + recCards.length : ''}</button>` : '';
   $('#chips').innerHTML = kindChips(kindFilter, data.counts, data.tags, tagFilter, '') + inboxChip + recChip;
-  const railOff = () => { const r = $('#tagrail'); if (r) { r.hidden = true; document.querySelector('.feedbody').classList.remove('withrail'); } };
+  const railOff = () => { const r = $('#tagrail'); if (r) { r.hidden = true; $('#view-feed').classList.remove('withrail'); } };
   if (kindFilter === 'recs') {
     railOff(); $('#papers').hidden = true; $('#errs').innerHTML = '';
     $('#list').innerHTML = recCards.length ? recCards.map(c => {
