@@ -1343,6 +1343,7 @@ function fillInstagram(ig) {
   const st = $('#ig_status'); if (!st) return;
   st.textContent = ig.on ? `connected as @${ig.username}${ig.expires ? ' · token until ' + new Date(ig.expires * 1000).toLocaleDateString() : ''}` : 'not connected';
   $('#ig_disconnect').hidden = !ig.on; $('#ig_connect').textContent = ig.on ? 'replace token' : 'connect';
+  const ck = $('#ig_ck_state'); if (ck) { ck.textContent = ig.cookies ? `a session is imported; reels use it` : ig.browser ? `no session imported yet (would read ${ig.browser})` : 'no session imported yet'; $('#ig_cookies').textContent = ig.cookies ? 'import again' : "import my browser's Instagram session"; }
 }
 async function igClick(b) {
   if (b.id === 'ig_connect') {
@@ -1353,6 +1354,7 @@ async function igClick(b) {
     finally { b.disabled = false; }
   }
   if (b.id === 'ig_disconnect') { await api('/api/ig/disconnect', {}); await load(); fillInstagram((data.settings || {}).instagram); }
+  if (b.id === 'ig_cookies') { b.disabled = true; try { const r = await api('/api/ig/cookies', {}); toast(`${r.cookies} Instagram cookies from ${r.browser}${r.session ? '' : ' (but no sessionid: are you signed in there?)'}`, 6000); await load(); fillInstagram((data.settings || {}).instagram); } catch (e) { toast(e.message, 9000); } finally { b.disabled = false; } }
 }
 function setMsgCount(n) { const e = $('#msgcnt'); if (e) e.textContent = n ? ` ${n}` : ''; }
 
@@ -1515,7 +1517,7 @@ document.addEventListener('click', async e => {
   if (b.id === 'gear') { const p = $('#settings'); p.hidden = !p.hidden; if (!p.hidden) fillSettings(); return; }
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
-  if (b.id === 'ig_connect' || b.id === 'ig_disconnect') { igClick(b); return; }
+  if (b.id === 'ig_connect' || b.id === 'ig_disconnect' || b.id === 'ig_cookies') { igClick(b); return; }
   if (b.id === 'cl_mcp' || b.id === 'cl_mcp_off' || (b.id && b.id.startsWith('br_'))) { claudeClick(b); return; }
   if (b.id === 'upd_check' || b.id === 'update-go') { updateClick(b); return; }
   if (b.id === 'quit') { if (confirm('stop feedel? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">feedel stopped. start it again to continue.</p></main>'; } return; }

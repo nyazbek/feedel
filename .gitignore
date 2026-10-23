@@ -5,6 +5,7 @@ config.json*
 state.json*
 cache.json*
 cache/
+cache/instagram_cookies.txt
 downloads/
 feedel.log
 quietfeed.log

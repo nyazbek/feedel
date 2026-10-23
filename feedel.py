@@ -2631,6 +2631,8 @@ def play_url(url):
     if not exe:
         return download_url(url, open_after=True)
     cmd[0] = exe
+    if "instagram.com" in url and ig_cookies_ready() and os.path.basename(exe).lower().startswith("mpv"):
+        cmd.insert(1, "--ytdl-raw-options=cookies=" + ig_cookie_file())  # mpv's yt-dlp needs the session for Instagram too
     ytdl = ytdlp_exe()
     if ytdl and os.path.basename(exe).lower().startswith("mpv") and not shutil.which("yt-dlp"):
         # mpv streams YouTube through yt-dlp; tell it where the executable is when it is not on PATH
@@ -2654,7 +2656,7 @@ def download_url(url, open_after=False):
     def run():
         try:
             with yt_dlp.YoutubeDL({"format": "bestvideo[height<=1080]+bestaudio/best", "outtmpl": out, "noplaylist": True,
-                                   "quiet": True, "no_warnings": True, "noprogress": True, "logger": _QuietLogger()}) as y:
+                                   "quiet": True, "no_warnings": True, "noprogress": True, "logger": _QuietLogger(), **ytdlp_cookie_opts(url)}) as y:
                 info = y.extract_info(url, download=True)
         except Exception as ex:
             log("download failed:", ex)
@@ -2865,7 +2867,13 @@ def resolve_link(url, via=""):
         canon = f"https://www.instagram.com/{'p' if parts and parts[0] == 'p' else 'reel'}/{m.group(1)}/"
         info = ytdlp_info(canon)
         if not info:
-            raise RuntimeError("Instagram did not hand over that one without a login: a private account, a post without video, or Instagram is blocking right now")
+            err = YTDLP_LAST.get("error", "")
+            if "rate-limit" in err or "redirected to the login page" in err or "login" in err.lower():
+                raise RuntimeError("Instagram is limiting anonymous access from your connection right now. It lifts after a while; to stop depending on it, "
+                                   "import your browser's Instagram session under settings → Instagram" + (" (done, but Instagram still refused: sign in there again)" if ig_cookies_ready() else ""))
+            if "registered users" in err or "private" in err.lower():
+                raise RuntimeError("that account is private, or the post is for signed-in users only: import your browser's Instagram session under settings → Instagram")
+            raise RuntimeError("Instagram did not hand over that one: " + (err.split("ERROR:")[-1].strip()[:160] if err else "a post without video, or Instagram is blocking right now"))
         handle = next((h.lstrip("@") for h in (info.get("channel"), info.get("uploader_id"), (re.search(r"^Video by (\S+)", info.get("title") or "") or [None, ""])[1])
                        if h and not str(h).lstrip("@").isdigit()), "")
         caption = (info.get("description") or "").strip()
@@ -2887,6 +2895,60 @@ def resolve_link(url, via=""):
         it["follow"] = {"kind": "rss", "ref": href if href.startswith("http") else f"{u.scheme}://{u.netloc}/" + href.lstrip("/"), "name": site}
     return it
 
+YTDLP_LAST = {"error": ""}
+
+def ig_cookie_file():
+    return os.path.join(HERE, "cache", "instagram_cookies.txt")
+
+def ig_cookies_ready():
+    p = ig_cookie_file()
+    return os.path.isfile(p) and os.path.getsize(p) > 100
+
+def ytdlp_cookie_opts(url):
+    """Instagram limits what it hands over anonymously; with your browser's session imported, reels keep working."""
+    if "instagram.com" in (url or "") and ig_cookies_ready():
+        return {"cookiefile": ig_cookie_file()}
+    return {}
+
+def ig_import_cookies(browser=None):
+    """Copy the instagram.com cookies of a local browser (through yt-dlp's cookie reader) into feedel's own cookie
+    file, once; a Chromium-based browser must be closed for its cookie database to be readable on Windows."""
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+    except ImportError:
+        raise RuntimeError("this needs yt-dlp as a Python module")
+    from http.cookiejar import MozillaCookieJar
+    name = (browser or "").strip().lower() or browser_cookie_name()
+    if not name:
+        raise RuntimeError("no browser to read from: set the fallback browser under settings → links, or pass one")
+    try:
+        jar = extract_cookies_from_browser(name)
+    except Exception as ex:
+        msg = str(ex)
+        if "Could not copy" in msg or "locked" in msg.lower() or "database is locked" in msg.lower():
+            raise RuntimeError(f"{name} keeps its cookie database locked while it is open: close {name} completely, press this again, then open it back")
+        raise RuntimeError(f"could not read {name}'s cookies: {msg[:200]}")
+    out = MozillaCookieJar(ig_cookie_file())
+    n = 0
+    for c in jar:
+        if "instagram.com" in (c.domain or ""):
+            out.set_cookie(c)
+            n += 1
+    if not n:
+        raise RuntimeError(f"{name} holds no Instagram session: sign in to instagram.com there once, then import again")
+    os.makedirs(os.path.dirname(ig_cookie_file()), exist_ok=True)
+    out.save(ignore_discard=True, ignore_expires=True)
+    names = {c.name for c in out}
+    return {"ok": True, "cookies": n, "browser": name, "session": "sessionid" in names}
+
+def browser_cookie_name():
+    """yt-dlp's name for the browser feedel hands links to (or the system default): vivaldi, chrome, edge, brave, firefox."""
+    b = (browser_for_the_rest() or "").lower()
+    for key in ("vivaldi", "chrome", "chromium", "edge", "brave", "opera", "firefox"):
+        if key in b:
+            return "edge" if key == "edge" else key
+    return ""
+
 def ytdlp_info(url):
     """What yt-dlp knows about a page's video without downloading it (the first entry of a carousel or playlist).
     None when there is no video, yt-dlp fails, or yt-dlp is unavailable."""
@@ -2896,11 +2958,13 @@ def ytdlp_info(url):
         return None
     try:
         with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
-                               "socket_timeout": 15, "retries": 1, "logger": _QuietLogger()}) as y:
+                               "socket_timeout": 15, "retries": 1, "logger": _QuietLogger(), **ytdlp_cookie_opts(url)}) as y:
             info = y.extract_info(url, download=False)
     except Exception as ex:
+        YTDLP_LAST["error"] = str(ex)
         log("  yt-dlp", url, str(ex)[:160])
         return None
+    YTDLP_LAST["error"] = ""
     if info and info.get("_type") == "playlist":
         entries = [e for e in (info.get("entries") or []) if e]
         for k in ("description", "uploader", "uploader_id", "channel", "timestamp"):  # the carousel's own fields describe the post
@@ -3897,7 +3961,8 @@ def ig_send(igsid, text, username=""):
 
 def ig_status():
     token, uid, username, expires = ig_cfg()
-    return {"on": bool(token and uid), "username": username, "expires": expires, "at": STATE.get("ig_at"), "error": STATE.get("ig_error")}
+    return {"on": bool(token and uid), "username": username, "expires": expires, "at": STATE.get("ig_at"), "error": STATE.get("ig_error"),
+            "cookies": ig_cookies_ready(), "browser": browser_cookie_name()}
 
 # ---------------------------------------------------------------- messages (a box for notes from Claude and from friends)
 
@@ -5169,6 +5234,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"ok": True, "new": n, "error": STATE.get("dm_error") or STATE.get("ig_error")})
             if p.path == "/api/ig/connect":
                 return self._send(ig_connect(str(body.get("token", ""))))
+            if p.path == "/api/ig/cookies":
+                return self._send(ig_import_cookies(str(body.get("browser", ""))))
             if p.path == "/api/ig/disconnect":
                 return self._send(ig_disconnect())
             if p.path == "/api/share":

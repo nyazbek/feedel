@@ -110,6 +110,10 @@
 
   <section class="st" data-st="instagram" hidden>
     <h2 class="sub">Instagram <span class="meta">— your direct messages, through Meta's official API, into the <b>messages</b> tab</span></h2>
+    <h2 class="sub">Reels <span class="meta">— Instagram lets anyone open a few reels, then asks for a login; with your browser's session imported, reels keep working</span></h2>
+    <div class="row"><span class="meta" id="ig_ck_state">…</span><button id="ig_cookies" class="solid">import my browser's Instagram session</button></div>
+    <p class="meta">sign in to instagram.com in your browser once, close the browser completely (it keeps its cookies locked while open), press the button, open it back. feedel keeps only the instagram.com cookies, in its own cache folder.</p>
+    <h2 class="sub">Direct messages <span class="meta">— through Meta's official API, into the <b>messages</b> tab</span></h2>
     <div class="row"><span class="meta" id="ig_status">not connected</span></div>
     <div class="row"><input id="ig_token" type="password" placeholder="paste the access token from Meta's app dashboard" autocomplete="off"><button id="ig_connect" class="solid">connect</button><button id="ig_disconnect" class="link" hidden>disconnect</button></div>
     <details class="steps-box"><summary class="meta">how to get the token (one-time, about twenty minutes)</summary>
