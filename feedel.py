@@ -2771,6 +2771,7 @@ def resolve_link(url, via=""):
     url = url.strip().strip("<>\"'")
     if "://" not in url:
         url = "https://" + url
+    url = unshorten(url)
     kind = link_kind(url)
     u = urlparse(url)
     host = re.sub(r"^(www|m|mobile|music)\.", "", u.netloc.lower())
@@ -3110,9 +3111,45 @@ def browser_for_the_rest():
             return p
     return None
 
+SHORTENERS = {"t.co", "bit.ly", "buff.ly", "tinyurl.com", "lnkd.in", "ow.ly", "goo.gl", "trib.al", "dlvr.it", "ift.tt", "is.gd", "rb.gy",
+              "cutt.ly", "shorturl.at", "tiny.cc", "bbc.in", "nyti.ms", "wapo.st", "econ.st", "reut.rs", "on.ft.com", "youtu.be"}
+UNSHORTENED = {}
+
+def unshorten(url, hops=4):
+    """A shortener's link (t.co, bit.ly…) → where it lands, following up to four redirects without fetching the
+    page itself. t.co answers browsers with a page instead of a redirect, so a plain client name is used. Other
+    links come back unchanged."""
+    url = (url or "").strip()
+    for _ in range(hops):
+        host = re.sub(r"^www\.", "", urlparse(url if "://" in url else "https://" + url).netloc.lower())
+        if host not in SHORTENERS or host == "youtu.be":
+            break
+        if url in UNSHORTENED:
+            url = UNSHORTENED[url]
+            continue
+        try:
+            opener = urllib.request.build_opener(NoRedirect)
+            r = opener.open(urllib.request.Request(url, headers={"User-Agent": "curl/8.0"}), timeout=12)
+            body = r.read(4000).decode("utf-8", "ignore")
+            m = re.search("URL=([^\"'>\s]+)", body, re.I) or re.search(r'href="(https?://[^"]+)"', body)
+            nxt = html.unescape(m.group(1)) if m else ""
+        except urllib.error.HTTPError as e:
+            nxt = e.headers.get("Location", "") if e.code in (301, 302, 303, 307, 308) else ""
+        except Exception:
+            nxt = ""
+        if not nxt or nxt == url:
+            break
+        if nxt.startswith("/"):
+            nxt = f"https://{host}{nxt}"
+        UNSHORTENED[url] = nxt
+        url = nxt
+    return url
+
 def feedel_opens(url):
     """Which links the link handler keeps for feedel: YouTube, X, arXiv, Instagram reels, Substack, and posts on
-    the site of any newsletter or blog you follow. Everything else is for the normal browser."""
+    the site of any newsletter or blog you follow. Everything else is for the normal browser. A shortener's link
+    is followed first, so a t.co from X or a bit.ly to a video counts as what it leads to."""
+    url = unshorten(url)
     k = link_kind(url)
     if k in ("yt", "tw", "arxiv", "ig"):
         return True
@@ -3128,6 +3165,7 @@ def feedel_opens(url):
 def open_link_cli(url):
     """`feedel --open URL`: a video, post, paper, reel or newsletter link goes to the inbox and the page opens on
     it; anything else goes to the normal browser. This is what makes feedel usable as the system's link handler."""
+    url = unshorten(url)
     if feedel_opens(url):
         import webbrowser
         target = f"http://localhost:{PORT}/open?" + urlencode({"u": url})
@@ -4990,6 +5028,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(claude_status())
             if p.path == "/api/claude/briefing/prompt":
                 return self._send(briefing_prompt(), "text/plain; charset=utf-8")
+            if p.path == "/api/unshorten":  # where a shortener's link leads, so the page can decide inbox or browser
+                u = q.get("url", [""])[0]
+                return self._send({"url": unshorten(u), "feedel": feedel_opens(u)})
             if p.path == "/api/update":
                 if q.get("check", [""])[0]:
                     return self._send(update_check())

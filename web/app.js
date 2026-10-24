@@ -733,6 +733,7 @@ function linkify(text, links) {
   h = h.replace(/(^|[^\w/.])@(\w{1,15})\b/g, (m, pre, user) => pre + `<button class="src mention" data-src="tw|${user}" title="their profile">@${user}</button>`);
   return h;
 }
+function isShortener(url) { return /^https?:\/\/(www\.)?(t\.co|bit\.ly|buff\.ly|tinyurl\.com|lnkd\.in|ow\.ly|goo\.gl|trib\.al|dlvr\.it|ift\.tt|is\.gd|rb\.gy|cutt\.ly|shorturl\.at|tiny\.cc|bbc\.in|nyti\.ms|wapo\.st|econ\.st|reut\.rs)\//i.test(url); }
 function feedelOpens(url) { return /^https?:\/\/(www\.|m\.|mobile\.)?(youtube\.com|youtu\.be|x\.com|twitter\.com|arxiv\.org|instagram\.com)\//i.test(url) || /substack\.com\//i.test(url); }
 function twPost(t, cls = '', num = '', tag = '') {
   const vid = t.video ? `<button data-a="tw-play" data-url="${esc(t.mp4 || t.link)}">▶ play${t.dur ? ' · ' + dur(t.dur) : ''}</button>` : (t.media && !(t.photos || []).length ? '<span class="meta">has media · </span>' : '');
@@ -1449,7 +1450,16 @@ async function takeToClaude(id) {
 
 document.addEventListener('click', async e => {
   const tl = e.target.closest('a.tl');
-  if (tl && feedelOpens(tl.href)) { e.preventDefault(); try { await api('/api/inbox', { url: tl.href, via: 'post' }); toast('in your inbox'); } catch (err) { toast(err.message + ' — opening it in the browser', 5000); window.open(tl.href, '_blank', 'noopener'); } return; }
+  if (tl && (feedelOpens(tl.href) || isShortener(tl.href))) {
+    e.preventDefault();
+    let target = tl.href;
+    if (!feedelOpens(target)) {  // a shortener: ask the server where it leads before deciding
+      try { const r = await api('/api/unshorten?url=' + encodeURIComponent(target)); target = r.url; if (!r.feedel) { window.open(target, '_blank', 'noopener'); return; } }
+      catch (err) { window.open(target, '_blank', 'noopener'); return; }
+    }
+    try { await api('/api/inbox', { url: target, via: 'post' }); toast('in your inbox'); } catch (err) { toast(err.message + ' — opening it in the browser', 5000); window.open(target, '_blank', 'noopener'); }
+    return;
+  }
   const who = e.target.closest('.msgcard > .who[data-a="msg-fold"]');
   if (who && !e.target.closest('a, button')) { const card = who.parentElement; foldMsg(card, !card.classList.contains('folded')); return; }
   const b = e.target.closest('button');
