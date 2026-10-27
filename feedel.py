@@ -3949,7 +3949,10 @@ def ig_fetch_dms():
     except Exception as ex:
         STATE["ig_error"] = str(ex)
         return 0
-    STATE["ig_empty"] = not convs  # with Standard Access Meta lists only conversations with accounts that have a role on the app
+    STATE["ig_empty"] = not convs  # an unpublished Meta app is handed only the conversations with its testers
+    if my_name:  # messages of yours stored before the professional id counted as you: they are yours
+        with tx() as db:
+            db.execute("UPDATE messages SET channel='me', read_at=COALESCE(read_at, ts) WHERE channel='ig' AND sender=? AND ext_id LIKE 'ig:%'", (my_name,))
     known = STATE.setdefault("ig_conv", {})
     n = 0
     for c in convs:
