@@ -1325,7 +1325,7 @@ async function renderMessages() {
   $('#msg-compose').hidden = !z;
   $('#msg-state').innerHTML = (z ? `direct messages on Zulip land here${msgData.dm_error ? ` <span class="warn">(last check failed: ${esc(msgData.dm_error)})</span>` : ''}; ` : 'connect a group in the friends tab and your friends\' direct messages land here too; ') +
     (ig.on ? `Instagram direct messages of @${esc(ig.username)} too${ig.error ? ` <span class="warn">(last check failed: ${esc(ig.error)})</span>` : ''}${msgData.fetching ? ' <span class="faint">(checking…)</span>' : ''}; ` : '') +
-    'Claude leaves notes here when you connect it (settings → Claude).';
+    'a reel, video, post or paper a friend sends goes to your inbox on its own; Claude leaves notes here when you connect it (settings → Claude).';
   setMsgCount(msgData.unread);
   paintMessages();
   // direct messages are being fetched behind this: look again in a moment

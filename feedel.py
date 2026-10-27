@@ -3923,7 +3923,9 @@ def ig_refresh_token():
         log("instagram: token refresh failed:", ex)
 
 def _ig_links(m):
-    out = []
+    """The links a direct message carries: a shared reel or post (Meta lists it under `shares`, as a plain
+    instagram.com link), attached media, and any link written in the text."""
+    out = [str(sh.get("link") or "") for sh in ((m.get("shares") or {}).get("data") or [])]
     for a in ((m.get("attachments") or {}).get("data") or []):
         for key in ("image_data", "video_data", "file_data"):
             u = (a.get(key) or {}).get("url")
@@ -3935,10 +3937,34 @@ def _ig_links(m):
     out += re.findall(r"https?://\S+", m.get("message") or "")
     seen, uniq = set(), []
     for u in out:
-        if u not in seen:
+        if u and u not in seen:
             seen.add(u)
             uniq.append(u)
     return uniq
+
+def _ig_body(m, text, links):
+    """What to show for a direct message: its text, plus what Meta only describes: a shared reel, a reply to or a
+    mention in a story (with the story while it lasts), or something it keeps for its app (a sticker, a voice note)."""
+    body = html.escape(text).replace("\n", "<br>") if text else ""
+    story = m.get("story") or {}
+    for key, what in (("reply_to", "replied to"), ("mention", "mentioned you in")):
+        if key in story:
+            link = (story.get(key) or {}).get("link") or ""
+            noun = "your story" if key == "reply_to" else "a story"
+            tag = f'<a href="{html.escape(link)}" target="_blank" rel="noopener">{noun}</a>' if link.startswith("https://") else noun
+            body = f'<span class="meta">{what} {tag}' + (":</span> " + body if body else "</span>")
+    if not body:
+        shared = [u for u in links if link_kind(u) == "ig"]
+        titles = [str((a.get("generic_template") or {}).get("title") or "") for a in ((m.get("attachments") or {}).get("data") or [])]
+        if shared:
+            body = '<span class="meta">shared ' + ("a post" if "/p/" in shared[0] else "a reel") + "</span>"
+        elif links:
+            body = '<span class="meta">[shared media]</span>'
+        elif any(titles):
+            body = '<span class="meta">[Instagram: ' + html.escape(next(t for t in titles if t)) + "]</span>"
+        elif m.get("is_unsupported"):
+            body = '<span class="meta">[a sticker, a voice note or a post Instagram does not hand over]</span>'
+    return body
 
 def ig_fetch_dms():
     """Your Instagram direct messages into the messages tab: the conversations that changed since last time, their
@@ -3946,7 +3972,18 @@ def ig_fetch_dms():
     if not ig_ready():
         return 0
     token, my_id, my_name, _ = ig_cfg()
+    if not (CONFIG.get("instagram") or {}).get("pro_id"):  # connected before feedel learned your second id: ask for it once
+        try:
+            me = ig_request("/me", {"fields": "id,user_id"})
+            with LOCK:
+                CONFIG["instagram"]["pro_id"] = str(me.get("user_id") or me.get("id") or "")
+                save_config()
+        except Exception as ex:
+            log("  instagram: could not learn your messaging id:", ex)
     my_ids = {my_id, str((CONFIG.get("instagram") or {}).get("pro_id") or "")} - {""}
+    with tx() as db:  # messages of yours stored as a friend's while that id was unknown
+        db.execute("UPDATE messages SET channel = 'me', read_at = COALESCE(read_at, ?) WHERE user_id = ? AND channel = 'ig' AND lower(sender) = lower(?)",
+                   (int(time.time()), USER_ID, my_name))
     ig_refresh_token()
     try:
         convs = ig_request("/me/conversations", {"platform": "instagram", "fields": "id,updated_time", "limit": 25}).get("data") or []
@@ -3972,12 +4009,14 @@ def ig_fetch_dms():
     with LOCK:
         known = CACHE.setdefault("ig_conv", {})
     n = 0
+    to_inbox = []
     for c in convs:
-        cid, upd = c.get("id"), str(c.get("updated_time") or "")
+        cid, upd = c.get("id"), str(c.get("updated_time") or "") + "|s"
         if not cid or known.get(cid) == upd:
             continue
         msgs = None
-        for fields in ("messages.limit(20){id,created_time,from,to,message,attachments}", "messages.limit(20){id,created_time,from,to,message}"):
+        for fields in ("messages.limit(20){id,created_time,from,to,message,attachments,shares,story,is_unsupported}",
+                       "messages.limit(20){id,created_time,from,to,message,attachments}", "messages.limit(20){id,created_time,from,to,message}"):
             try:
                 msgs = ((ig_request("/" + cid, {"fields": fields}).get("messages") or {}).get("data")) or []
                 break
@@ -3991,27 +4030,29 @@ def ig_fetch_dms():
             continue
         for m in msgs:
             frm = m.get("from") or {}
-            mine = str(frm.get("id")) in my_ids
+            mine = str(frm.get("id")) in my_ids or (frm.get("username") or "").lower() == my_name.lower()
             tos = [t for t in ((m.get("to") or {}).get("data") or []) if str(t.get("id")) not in my_ids]
             other = tos[0] if (mine and tos) else ({} if mine else frm)
             text = (m.get("message") or "").strip()
             links = _ig_links(m)
-            body = html.escape(text).replace("\n", "<br>") if text else ""
-            if not text and links:
-                body = "<span class=\"meta\">[shared media]</span>"
+            body = _ig_body(m, text, links)
             if not body:
                 continue
-            before = msg_unread()
-            msg_add("me" if mine else "ig", body, sender=frm.get("username") or ("you" if mine else "an Instagram account"), sender_email="",
-                    ext_id="ig:" + str(m.get("id")), ts=iso_ts(m.get("created_time")) or time.time(), links=links,
-                    meta={"html": True, "to": [{"name": t.get("username", ""), "email": ""} for t in tos] if mine else [],
-                          "ig": {"igsid": str(other.get("id") or ""), "username": other.get("username", ""), "conversation": cid}},
-                    read=mine)
-            n += 1 if msg_unread() != before else 0
+            ts = iso_ts(m.get("created_time")) or time.time()
+            fresh = ts >= time.time() - MSG_FRESH
+            row = msg_add("me" if mine else "ig", body, sender=frm.get("username") or ("you" if mine else "an Instagram account"), sender_email="",
+                          ext_id="ig:" + str(m.get("id")), ts=ts, links=links,
+                          meta={"html": True, "to": [{"name": t.get("username", ""), "email": ""} for t in tos] if mine else [],
+                                "ig": {"igsid": str(other.get("id") or ""), "username": other.get("username", ""), "conversation": cid}},
+                          read=mine or not fresh)  # older than a week: kept for the conversation, not as unread
+            if row.get("new") and not mine and fresh:
+                n += 1
+                to_inbox += [(u, "@" + (frm.get("username") or "someone") + " on instagram") for u in links]
         with LOCK:
-            known[cid] = upd
+            known[cid] = upd  # the updated_time plus "|s" (fetched with its shares): conversations fetched before that are read again once
             CACHE_DIRTY.add(("ig_conv", cid))
     save_cache()
+    msg_links_to_inbox(to_inbox)
     STATE["ig_error"] = None
     STATE["ig_at"] = int(time.time())
     return n
@@ -4061,7 +4102,30 @@ def msg_add(channel, body, title="", links=(), sender="", sender_email="", ext_i
                          (USER_ID, channel, ext_id or "", sender or "", (sender_email or "").lower(), str(title or "")[:200], body[:20000],
                           json.dumps([str(l) for l in links or []][:30]), int(ts or now), now if (read or channel == "me") else None, reply_to,
                           json.dumps(meta or {})))
-        return msg_row(db.execute("SELECT * FROM messages WHERE id = ?", (cur.lastrowid,)).fetchone())
+        row = msg_row(db.execute("SELECT * FROM messages WHERE id = ?", (cur.lastrowid,)).fetchone())
+        row["new"] = True
+        return row
+
+MSG_FRESH = 7 * 86400  # a message this recent is news: unread, and its links go to the inbox
+
+def msg_links_to_inbox(pairs):
+    """Links friends send you (a reel, a video, a post, a paper) go to the inbox on their own, the way links you copy
+    do: whatever feedel would open, from the week's new messages, resolved one at a time in the background."""
+    if not pairs:
+        return
+    def go():
+        seen = set()
+        for url, via in pairs:
+            key = canon_key(url) or url
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if feedel_opens(url):
+                    inbox_take(url, via)
+            except Exception as ex:
+                log(f"  inbox ({via}) failed for {url}: {ex}")
+    threading.Thread(target=go, daemon=True).start()
 
 def msg_list(include_archived=False, limit=MSG_LIMIT):
     with LOCK:
@@ -4104,6 +4168,7 @@ def link_index():
     known = {}
     with LOCK:
         pool = list(STATE["items"]) + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]
+    pool += inbox_list()  # a reel a friend sent is in the inbox before anywhere else
     for it in pool:
         for u in (it.get("link"), it.get("id")):
             k = canon_key(u) if u else None
@@ -4179,7 +4244,7 @@ def zulip_fetch_dms():
         else:
             STATE["dm_error"] = str(ex)
             return 0
-    n = 0
+    n, to_inbox = 0, []
     for m in r.get("messages", []):
         mine = (m.get("sender_email") or "").lower() == email.lower() or m.get("sender_id") == me.get("user_id")
         people = [p for p in (m.get("display_recipient") or []) if isinstance(p, dict)]
@@ -4187,10 +4252,13 @@ def zulip_fetch_dms():
         content = zulip_clean(m.get("content", ""), site)
         links = [html.unescape(h) for h in re.findall(r'href="([^"]+)"', content)]
         before = msg_unread()
-        msg_add("me" if mine else "zulip", content, sender=m.get("sender_full_name", ""), sender_email=m.get("sender_email", ""),
-                ext_id=str(m.get("id")), ts=m.get("timestamp"), links=[l for l in links if canon_key(l)],
-                meta={"html": True, "to": others, "read": "read" in (m.get("flags") or [])}, read="read" in (m.get("flags") or []))
+        row = msg_add("me" if mine else "zulip", content, sender=m.get("sender_full_name", ""), sender_email=m.get("sender_email", ""),
+                      ext_id=str(m.get("id")), ts=m.get("timestamp"), links=[l for l in links if canon_key(l)],
+                      meta={"html": True, "to": others, "read": "read" in (m.get("flags") or [])}, read="read" in (m.get("flags") or []))
         n += 1 if msg_unread() != before else 0
+        if row.get("new") and not mine and (m.get("timestamp") or 0) >= time.time() - MSG_FRESH:
+            to_inbox += [(l, (m.get("sender_full_name") or "a friend") + " on zulip") for l in row["links"]]
+    msg_links_to_inbox(to_inbox)
     STATE["dm_error"] = None
     STATE["dm_at"] = int(time.time())
     return n
