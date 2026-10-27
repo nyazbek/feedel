@@ -1198,6 +1198,60 @@ async function importFiles(files) {
 /* ------------------------------------------------------------ messages (notes from Claude, direct messages from friends) */
 
 let msgData = null, msgArchived = false, msgPeople = null;
+let msgTab = 'claude'; try { msgTab = localStorage.getItem('msgtab') || 'claude'; } catch (e) { /* ignore */ }
+const convOpen = new Set(); try { JSON.parse(localStorage.getItem('convopen') || '[]').forEach(k => convOpen.add(k)); } catch (e) { /* ignore */ }
+function saveConvOpen() { try { localStorage.setItem('convopen', JSON.stringify([...convOpen])); } catch (e) { /* ignore */ } }
+// where a message belongs: Claude's notes and your answers to them, Zulip direct messages, Instagram direct messages
+function msgTabOf(m) {
+  if (m.channel === 'ig' || (m.meta && m.meta.ig)) return 'ig';
+  if (m.channel === 'zulip' || (m.channel === 'me' && (m.meta && m.meta.to || []).length)) return 'zulip';
+  return 'claude';
+}
+// the conversation a direct message belongs to, and whom it is with
+function convKey(m) {
+  if (msgTabOf(m) === 'ig') { const ig = (m.meta && m.meta.ig) || {}; return 'ig:' + (ig.conversation || ig.username || m.sender || '?'); }
+  if (m.channel === 'zulip') return 'z:' + (m.sender_email || m.sender || '?');
+  return 'z:' + ((m.meta && m.meta.to || []).map(p => p.email || p.name).filter(Boolean).sort().join(',') || '?');
+}
+function convWho(m) {
+  if (msgTabOf(m) === 'ig') { const ig = (m.meta && m.meta.ig) || {}; return m.channel === 'ig' ? (m.sender || ig.username || 'an Instagram account') : (ig.username || (m.meta.to || []).map(p => p.name).join(', ') || 'someone'); }
+  return m.channel === 'zulip' ? (m.sender || 'a friend') : ((m.meta && m.meta.to || []).map(p => p.name || p.email).filter(Boolean).join(', ') || 'a friend');
+}
+function msgText(m) { return ((m.meta && m.meta.html) ? (m.body || '').replace(/<[^>]+>/g, ' ') : (m.body || '')).replace(/&[a-z#0-9]+;/g, s => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#x27;': "'", '&#39;': "'" }[s] || s)).replace(/\s+/g, ' ').trim(); }
+function bubble(m) {
+  const mine = m.channel === 'me';
+  const body = (m.meta && m.meta.html) ? `<div class="mbody html">${m.body}</div>` : `<div class="mbody">${md(m.body)}</div>`;
+  const links = (m.links || []).length ? `<div class="mlinks">${m.links.map(l => `<span class="mlink"><a href="${esc(l.url)}" target="_blank" rel="noopener">${l.kind ? `<span class="k">${esc(l.kind)}</span> ` : ''}${esc(l.title || l.url.replace(/^https?:\/\//, '').slice(0, 60))}</a><button data-a="msg-inbox" data-url="${esc(l.url)}" title="put it in your inbox, where it can be played">→ inbox</button></span>`).join('')}</div>` : '';
+  return `<div class="bubble${mine ? ' me' : ' them'}${m.read || mine ? '' : ' unread'}" data-mid="${m.id}">${body}${links}<div class="when" title="${new Date(m.ts * 1000).toLocaleString()}">${ago(m.ts)} ago</div></div>`;
+}
+// one card per conversation: closed, the last line; open, the whole exchange with a reply box at the bottom
+function convCard(c) {
+  const open = convOpen.has(c.key), last = c.msgs[c.msgs.length - 1];
+  const unread = c.msgs.filter(m => !m.read && m.channel !== 'me');
+  const kind = c.tab === 'ig' ? 'instagram' : 'zulip';
+  const preview = (last.channel === 'me' ? 'you: ' : '') + msgText(last).slice(0, 160);
+  const head = `<div class="chead" data-a="conv-toggle"><span class="avatar">${esc((c.who || '?').replace(/^@/, '').slice(0, 1).toUpperCase())}</span>
+    <span class="cwho"><b>${esc(c.who)}</b><span class="meta"> · ${kind}${c.msgs.length > 1 ? ` · ${c.msgs.length} messages` : ''}</span></span>
+    ${unread.length ? `<span class="cnt">${unread.length}</span>` : ''}<span class="grow"></span><span class="meta">${ago(last.ts)} ago</span><span class="chev">${open ? '▾' : '▸'}</span></div>`;
+  if (!open) return `<div class="conv${unread.length ? ' unread' : ''}" data-conv="${esc(c.key)}">${head}<div class="cpreview">${esc(preview)}</div></div>`;
+  const who = c.tab === 'ig' ? `a direct message to ${esc(c.who)} on Instagram (Meta allows it within 24 h of their last message)` : `a direct message to ${esc(c.who)} on Zulip`;
+  return `<div class="conv open${unread.length ? ' unread' : ''}" data-conv="${esc(c.key)}" data-last="${last.id}">${head}
+    <div class="cbody">${c.msgs.map(bubble).join('')}</div>
+    <div class="creply"><textarea rows="2" placeholder="${who}"></textarea><div class="row"><button class="solid" data-a="conv-send">send</button><span class="grow"></span>
+      ${unread.length ? '<button class="link" data-a="conv-read">mark read</button>' : ''}<button class="link faint" data-a="conv-archive">${c.msgs.every(m => m.archived) ? 'unarchive' : 'archive'} conversation</button></div></div></div>`;
+}
+function conversations(msgs, tab) {
+  const by = {};
+  for (const m of msgs) { const k = convKey(m); (by[k] = by[k] || { key: k, tab, msgs: [], who: '' }).msgs.push(m); }
+  const out = Object.values(by);
+  for (const c of out) { c.msgs.sort((a, b) => a.ts - b.ts || a.id - b.id); const them = c.msgs.find(m => m.channel !== 'me'); c.who = convWho(them || c.msgs[0]); }
+  return out.sort((a, b) => b.msgs[b.msgs.length - 1].ts - a.msgs[a.msgs.length - 1].ts);
+}
+function showMsgTab(name) {
+  msgTab = name; try { localStorage.setItem('msgtab', name); } catch (e) { /* ignore */ }
+  document.querySelectorAll('.mtabs button').forEach(x => x.classList.toggle('on', x.dataset.mt === name));
+  if (msgData) paintMessages();
+}
 const msgFolded = new Set(); try { JSON.parse(localStorage.getItem('msgfold') || '[]').forEach(i => msgFolded.add(i)); } catch (e) { /* ignore */ }
 function saveFold() { try { localStorage.setItem('msgfold', JSON.stringify([...msgFolded])); } catch (e) { /* ignore */ } }
 function foldMsg(card, on) {
@@ -1270,14 +1324,36 @@ async function renderMessages() {
   const z = msgData.zulip, ig = msgData.instagram || {};
   $('#msg-compose').hidden = !z;
   $('#msg-state').innerHTML = (z ? `direct messages on Zulip land here${msgData.dm_error ? ` <span class="warn">(last check failed: ${esc(msgData.dm_error)})</span>` : ''}; ` : 'connect a group in the friends tab and your friends\' direct messages land here too; ') +
-    (ig.on ? `Instagram direct messages of @${esc(ig.username)} too${ig.error ? ` <span class="warn">(last check failed: ${esc(ig.error)})</span>` : ''}; ` : '') +
+    (ig.on ? `Instagram direct messages of @${esc(ig.username)} too${ig.error ? ` <span class="warn">(last check failed: ${esc(ig.error)})</span>` : ''}${msgData.fetching ? ' <span class="faint">(checking…)</span>' : ''}; ` : '') +
     'Claude leaves notes here when you connect it (settings → Claude).';
   setMsgCount(msgData.unread);
-  if (!msgData.messages.length) { list.innerHTML = '<p class="meta">nothing here yet.</p>'; return; }
-  // replies sit under what they answer; the rest newest first
+  paintMessages();
+  // direct messages are being fetched behind this: look again in a moment
+  clearTimeout(msgPoll);
+  if (msgData.fetching) msgPoll = setTimeout(() => { if (view === 'messages') renderMessages(); }, 4000);
+}
+let msgPoll = null;
+function paintMessages() {
+  const list = $('#msglist'), all = msgData.messages;
+  const counts = { claude: 0, zulip: 0, ig: 0 };
+  for (const m of all) if (!m.read && m.channel !== 'me') counts[msgTabOf(m)]++;
+  for (const k in counts) { const e = $('#mcnt-' + k); if (e) e.textContent = counts[k] ? ` ${counts[k]}` : ''; }
+  document.querySelectorAll('.mtabs button').forEach(x => x.classList.toggle('on', x.dataset.mt === msgTab));
+  const msgs = all.filter(m => msgTabOf(m) === msgTab);
+  $('#msg-compose').hidden = !(msgTab === 'zulip' && msgData.zulip);
+  $('#msg-foldall').textContent = msgTab === 'claude' ? 'fold all' : 'close all';
+  if (!msgs.length) {
+    const why = msgTab === 'claude' ? 'no notes from Claude yet: connect it under settings → Claude, and the daily briefing lands here.'
+      : msgTab === 'zulip' ? (msgData.zulip ? 'no direct messages on Zulip yet.' : 'connect a group in the friends tab and your friends’ direct messages land here.')
+      : ((msgData.instagram || {}).on ? 'no Instagram conversations fetched yet.' : 'connect your Instagram account under settings → Instagram and your direct messages land here.');
+    list.innerHTML = `<p class="meta">${why}</p>`;
+    return;
+  }
+  if (msgTab !== 'claude') { list.innerHTML = conversations(msgs, msgTab).map(convCard).join(''); return; }
+  // Claude's notes: replies sit under what they answer; the rest newest first
   const byId = {}, roots = [];
-  msgData.messages.forEach(m => { byId[m.id] = m; m.children = []; });
-  msgData.messages.forEach(m => { if (m.reply_to && byId[m.reply_to]) byId[m.reply_to].children.push(m); else roots.push(m); });
+  msgs.forEach(m => { byId[m.id] = m; m.children = []; });
+  msgs.forEach(m => { if (m.reply_to && byId[m.reply_to]) byId[m.reply_to].children.push(m); else roots.push(m); });
   const tree = m => msgCard(m) + (m.children.length ? `<div class="mreplies">${m.children.sort((a, b) => a.ts - b.ts).map(tree).join('')}</div>` : '');
   list.innerHTML = roots.map(tree).join('');
 }
@@ -1366,11 +1442,35 @@ async function igClick(b) {
 function setMsgCount(n) { const e = $('#msgcnt'); if (e) e.textContent = n ? ` ${n}` : ''; }
 
 async function msgClick(b) {
+  if (b.dataset.mt) { showMsgTab(b.dataset.mt); return; }
+  const conv = b.closest('.conv');
+  if (conv && b.dataset.a && b.dataset.a.startsWith('conv-')) {
+    const key = conv.dataset.conv, cm = msgData.messages.filter(x => msgTabOf(x) === msgTab && convKey(x) === key);
+    const unread = cm.filter(x => !x.read && x.channel !== 'me').map(x => x.id);
+    if (b.dataset.a === 'conv-toggle') {
+      if (convOpen.has(key)) convOpen.delete(key); else convOpen.add(key);
+      saveConvOpen(); paintMessages();
+      if (convOpen.has(key) && unread.length) { try { const r = await api('/api/messages/update', { ids: unread, read: true }); cm.forEach(x => { x.read = true; }); setMsgCount(r.unread); paintMessages(); } catch (e) { /* stays unread */ } }
+      return;
+    }
+    if (b.dataset.a === 'conv-read') { await api('/api/messages/update', { ids: unread, read: true }); await renderMessages(); return; }
+    if (b.dataset.a === 'conv-archive') { await api('/api/messages/update', { ids: cm.map(x => x.id), archived: !cm.every(x => x.archived) }); await renderMessages(); return; }
+    if (b.dataset.a === 'conv-send') {
+      const ta = conv.querySelector('.creply textarea'); const text = ta.value.trim(); if (!text) return;
+      b.disabled = true;
+      try { await api('/api/messages/send', { text, reply_to: +conv.dataset.last }); await renderMessages(); }
+      catch (e) { toast(e.message, 6000); b.disabled = false; }
+      return;
+    }
+  }
   const card = b.closest('.msgcard'); const mid = card ? +card.dataset.mid : null;
   const m = mid && msgData ? msgData.messages.find(x => x.id === mid) : null;
   if (b.id === 'msg-refresh') { b.disabled = true; try { const r = await api('/api/messages/refresh', {}); if (r.error) toast(r.error, 5000); } finally { b.disabled = false; } await renderMessages(); return; }
   if (b.id === 'msg-archived') { msgArchived = !msgArchived; await renderMessages(); return; }
-  if (b.id === 'msg-foldall') { const cards = [...document.querySelectorAll('.msgcard')]; const on = cards.some(c => !c.classList.contains('folded')); cards.forEach(c => foldMsg(c, on)); b.textContent = on ? 'unfold all' : 'fold all'; return; }
+  if (b.id === 'msg-foldall') {
+    if (msgTab !== 'claude') { document.querySelectorAll('.conv').forEach(c => convOpen.delete(c.dataset.conv)); saveConvOpen(); paintMessages(); return; }
+    const cards = [...document.querySelectorAll('.msgcard')]; const on = cards.some(c => !c.classList.contains('folded')); cards.forEach(c => foldMsg(c, on)); b.textContent = on ? 'unfold all' : 'fold all'; return;
+  }
   if (b.id === 'msg-compose') {
     $('#msg-composer').hidden = false; $('#msg-text').focus();
     if (!msgPeople) { try { msgPeople = await api('/api/zulip/people'); } catch (e) { toast(e.message); msgPeople = []; } }
@@ -1466,6 +1566,8 @@ document.addEventListener('click', async e => {
     try { await api('/api/inbox', { url: target, via: 'post' }); toast('in your inbox'); } catch (err) { toast(err.message + ' — opening it in the browser', 5000); window.open(target, '_blank', 'noopener'); }
     return;
   }
+  const ch = e.target.closest('.conv .chead[data-a="conv-toggle"]');
+  if (ch && !e.target.closest('a,button')) { msgClick(ch); return; }
   const who = e.target.closest('.msgcard > .who[data-a="msg-fold"]');
   if (who && !e.target.closest('a, button')) { const card = who.parentElement; foldMsg(card, !card.classList.contains('folded')); return; }
   const b = e.target.closest('button');
@@ -1474,7 +1576,7 @@ document.addEventListener('click', async e => {
   if (b.id && b.id.startsWith('fr-')) { friendsClick(b); return; }
   if (b.id === 'compact') { setCompact(!document.body.classList.contains('compact')); return; }
   if (b.dataset.st) { showSettingsTab(b.dataset.st); return; }
-  if ((b.id && b.id.startsWith('msg-')) || (b.dataset.a && b.dataset.a.startsWith('msg-'))) { msgClick(b); return; }
+  if ((b.id && b.id.startsWith('msg-')) || b.dataset.mt || (b.dataset.a && (b.dataset.a.startsWith('msg-') || b.dataset.a.startsWith('conv-')))) { msgClick(b); return; }
   if (b.dataset.src !== undefined) { const [k, id] = b.dataset.src.split('|'); openSource(k, id); return; }
   if (b.id === 'srcback') { view = 'feed'; location.hash = ''; render(); load(); return; }
   if (b.id === 'srcmore') {

@@ -3818,6 +3818,8 @@ def doh_resolve(host):
             continue
     return None
 
+DOH_NOTED = set()
+
 def fetch_pinned(url, ip, timeout=25, headers=None, data=None, method=None):
     """fetch(), but to a given address, with TLS still verified against the host's name (SNI and certificate)."""
     import http.client, socket, ssl
@@ -3848,7 +3850,9 @@ def ig_http(url, data=None, headers=None, method=None, timeout=25):
             ip = doh_resolve(host)
             if not ip:
                 raise RuntimeError(f"{host} cannot be resolved here (your DNS blocks it) and the DNS-over-HTTPS fallback failed too")
-            log(f"  {host}: the system resolver refuses it; connecting to {ip} directly")
+            if host not in DOH_NOTED:
+                DOH_NOTED.add(host)
+                log(f"  {host}: the system resolver refuses it; connecting to {ip} directly (from now on, quietly)")
             return fetch_pinned(url, ip, timeout=timeout, headers=headers, data=data, method=method)
         raise
 
@@ -3950,10 +3954,23 @@ def ig_fetch_dms():
         STATE["ig_error"] = str(ex)
         return 0
     STATE["ig_empty"] = not convs  # an unpublished Meta app is handed only the conversations with its testers
-    if my_name:  # messages of yours stored before the professional id counted as you: they are yours
+    if my_name:  # messages of yours stored before the professional id counted as you: they are yours, and their other party is the conversation's
         with tx() as db:
             db.execute("UPDATE messages SET channel='me', read_at=COALESCE(read_at, ts) WHERE channel='ig' AND sender=? AND ext_id LIKE 'ig:%'", (my_name,))
-    known = STATE.setdefault("ig_conv", {})
+            rows = db.execute("SELECT id, meta FROM messages WHERE user_id = ? AND channel='me' AND ext_id LIKE 'ig:%' AND meta LIKE ?",
+                              (USER_ID, '%"username": "' + my_name + '"%')).fetchall()
+            for r in rows:
+                meta = json.loads(r["meta"] or "{}")
+                cid = (meta.get("ig") or {}).get("conversation")
+                other = db.execute("SELECT meta FROM messages WHERE user_id = ? AND channel='ig' AND meta LIKE ? LIMIT 1",
+                                   (USER_ID, '%"conversation": "' + str(cid) + '"%')).fetchone() if cid else None
+                if other:
+                    o = (json.loads(other["meta"] or "{}").get("ig") or {})
+                    meta["ig"] = {"igsid": o.get("igsid", ""), "username": o.get("username", ""), "conversation": cid}
+                    meta["to"] = [{"name": o.get("username", ""), "email": ""}]
+                    db.execute("UPDATE messages SET meta = ? WHERE id = ?", (json.dumps(meta), r["id"]))
+    with LOCK:
+        known = CACHE.setdefault("ig_conv", {})
     n = 0
     for c in convs:
         cid, upd = c.get("id"), str(c.get("updated_time") or "")
@@ -3966,8 +3983,11 @@ def ig_fetch_dms():
                 break
             except Exception as ex:
                 last = ex
-        if msgs is None:
-            STATE["ig_error"] = str(last)
+        if msgs is None:  # a conversation Meta lists but will not hand over (a request, a deleted one): skipped until it changes
+            log("  instagram: conversation", cid[:24], "refused:", str(last)[:120])
+            with LOCK:
+                known[cid] = upd
+                CACHE_DIRTY.add(("ig_conv", cid))
             continue
         for m in msgs:
             frm = m.get("from") or {}
@@ -3988,7 +4008,10 @@ def ig_fetch_dms():
                           "ig": {"igsid": str(other.get("id") or ""), "username": other.get("username", ""), "conversation": cid}},
                     read=mine)
             n += 1 if msg_unread() != before else 0
-        known[cid] = upd
+        with LOCK:
+            known[cid] = upd
+            CACHE_DIRTY.add(("ig_conv", cid))
+    save_cache()
     STATE["ig_error"] = None
     STATE["ig_at"] = int(time.time())
     return n
@@ -4012,7 +4035,7 @@ def ig_status():
 
 # ---------------------------------------------------------------- messages (a box for notes from Claude and from friends)
 
-MSG_LIMIT = 300
+MSG_LIMIT = 1500
 
 def msg_row(r):
     d = dict(r)
@@ -4059,13 +4082,25 @@ def msg_update(mid, read=None, archived=None, body=None):
         raise RuntimeError("no such message")
     return msg_row(r)
 
+def msg_update_many(ids, read=None, archived=None):
+    ids = [int(i) for i in (ids or [])][:500]
+    if not ids:
+        return {"ok": True, "n": 0}
+    marks = ",".join("?" * len(ids))
+    with tx() as db:
+        if read is not None:
+            db.execute(f"UPDATE messages SET read_at = ? WHERE user_id = ? AND id IN ({marks})", (int(time.time()) if read else None, USER_ID, *ids))
+        if archived is not None:
+            db.execute(f"UPDATE messages SET archived = ? WHERE user_id = ? AND id IN ({marks})", (1 if archived else 0, USER_ID, *ids))
+    return {"ok": True, "n": len(ids), "unread": msg_unread()}
+
 def msg_unread():
     with LOCK:
         return DB.execute("SELECT COUNT(*) FROM messages WHERE user_id = ? AND archived = 0 AND read_at IS NULL AND channel != 'me'", (USER_ID,)).fetchone()[0]
 
-def link_titles(links):
-    """What the feed knows about each link: kind, title and author when the item is in the feed, the library or the inbox."""
-    out = []
+def link_index():
+    """Every item the feed, the library and the inbox hold, by the canonical key of its link: built once per request,
+    since a messages tab holds hundreds of messages and the pool thousands of items."""
     known = {}
     with LOCK:
         pool = list(STATE["items"]) + [v for v in SEEN_STATE["saved"].values() if isinstance(v, dict)]
@@ -4074,20 +4109,55 @@ def link_titles(links):
             k = canon_key(u) if u else None
             if k and k not in known:
                 known[k] = it
+    return known
+
+def link_titles(links, known=None):
+    """What the feed knows about each link: kind, title and author when the item is in the feed, the library or the inbox."""
+    out = []
+    if not links:
+        return out
+    if known is None:
+        known = link_index()
     for u in links:
         it = known.get(canon_key(u) or "")
         out.append({"url": u, "kind": it["kind"], "title": it.get("title", ""), "author": it.get("author", "")} if it else {"url": u})
     return out
 
+MSG_FETCHING = {"on": False}
+
+def msg_refresh_async():
+    """Fetch the direct messages (Zulip, Instagram) in the background when the last look is over a minute old.
+    Returns whether a fetch is running, so the page knows to ask again in a moment."""
+    if MSG_FETCHING["on"]:
+        return True
+    z_due = zulip_ready() and (STATE.get("dm_at") or 0) < time.time() - 60
+    i_due = ig_ready() and (STATE.get("ig_at") or 0) < time.time() - 60
+    if not (z_due or i_due):
+        return False
+    MSG_FETCHING["on"] = True
+    def go():
+        try:
+            if z_due:
+                zulip_fetch_dms()
+            if i_due:
+                ig_fetch_dms()
+        except Exception as ex:
+            log("messages:", ex)
+        finally:
+            MSG_FETCHING["on"] = False
+    threading.Thread(target=go, daemon=True).start()
+    return True
+
 def msg_payload(include_archived=False):
     msgs = msg_list(include_archived)
     site = zulip_cfg()[0]
+    known = link_index() if any(m["links"] for m in msgs) else {}
     for m in msgs:
-        m["links"] = link_titles(m["links"])
+        m["links"] = link_titles(m["links"], known)
         if m["meta"].get("html") and m["channel"] in ("zulip", "me"):  # earlier messages get the same cleaning as new ones
             m["body"] = zulip_clean(m["body"], site)
     return {"messages": msgs, "unread": msg_unread(), "zulip": zulip_ready(), "dm_error": STATE.get("dm_error"), "dm_at": STATE.get("dm_at"),
-            "instagram": ig_status()}
+            "instagram": ig_status(), "fetching": MSG_FETCHING["on"]}
 
 def zulip_fetch_dms():
     """Your direct messages on Zulip (both ways), into the box; the 20 most recent conversations' last 100 messages."""
@@ -5046,10 +5116,8 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/ig/status":
                 return self._send(ig_status())
             if p.path == "/api/messages":
-                if q.get("refresh", [""])[0] and zulip_ready() and (STATE.get("dm_at") or 0) < time.time() - 60:
-                    zulip_fetch_dms()
-                if q.get("refresh", [""])[0] and ig_ready() and (STATE.get("ig_at") or 0) < time.time() - 60:
-                    ig_fetch_dms()
+                if q.get("refresh", [""])[0]:
+                    msg_refresh_async()
                 return self._send(msg_payload(bool(q.get("archived", [""])[0])))
             if p.path == "/mcp":
                 return self._send({"error": "this endpoint speaks MCP over POST (Streamable HTTP); add it to Claude Code with: claude mcp add --transport http feedel " + f"http://127.0.0.1:{RUN_PORT}/mcp"}, code=405)
@@ -5277,6 +5345,8 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/api/messages/send":
                 return self._send(msg_send(str(body.get("text", "")), body.get("to") or [], body.get("reply_to"), str(body.get("title", ""))))
             if p.path == "/api/messages/update":
+                if body.get("ids"):
+                    return self._send(msg_update_many(body["ids"], body.get("read"), body.get("archived")))
                 return self._send(msg_update(int(body.get("id")), body.get("read"), body.get("archived"), body.get("body")))
             if p.path == "/api/messages/refresh":
                 n = zulip_fetch_dms() + ig_fetch_dms()

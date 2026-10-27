@@ -29,3 +29,4 @@ __pycache__/
 *.orig
 .claude/worktrees/
 .DS_Store
+.claude/launch.json
