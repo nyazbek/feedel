@@ -3883,12 +3883,13 @@ def ig_connect(token):
     token = (token or "").strip()
     if not token:
         raise RuntimeError("paste the token first")
-    me = ig_request("/me", {"fields": "id,username,name,account_type"}, token=token)
+    me = ig_request("/me", {"fields": "id,user_id,username,name,account_type"}, token=token)
     if not me.get("id"):
         raise RuntimeError("Meta answered without an account id: is that an Instagram user token?")
     with LOCK:
-        CONFIG["instagram"] = {**(CONFIG.get("instagram") or {}), "token": token, "user_id": str(me["id"]), "username": me.get("username", ""),
-                               "name": me.get("name", ""), "account_type": me.get("account_type", ""), "expires": int(time.time()) + 60 * 86400}
+        CONFIG["instagram"] = {**(CONFIG.get("instagram") or {}), "token": token, "user_id": str(me["id"]), "pro_id": str(me.get("user_id") or ""),
+                               "username": me.get("username", ""), "name": me.get("name", ""), "account_type": me.get("account_type", ""),
+                               "expires": int(time.time()) + 60 * 86400}
         save_config()
     STATE["ig_conv"] = {}
     n = ig_fetch_dms()
@@ -3941,12 +3942,14 @@ def ig_fetch_dms():
     if not ig_ready():
         return 0
     token, my_id, my_name, _ = ig_cfg()
+    my_ids = {my_id, str((CONFIG.get("instagram") or {}).get("pro_id") or "")} - {""}
     ig_refresh_token()
     try:
         convs = ig_request("/me/conversations", {"platform": "instagram", "fields": "id,updated_time", "limit": 25}).get("data") or []
     except Exception as ex:
         STATE["ig_error"] = str(ex)
         return 0
+    STATE["ig_empty"] = not convs  # with Standard Access Meta lists only conversations with accounts that have a role on the app
     known = STATE.setdefault("ig_conv", {})
     n = 0
     for c in convs:
@@ -3965,8 +3968,8 @@ def ig_fetch_dms():
             continue
         for m in msgs:
             frm = m.get("from") or {}
-            mine = str(frm.get("id")) == my_id
-            tos = [t for t in ((m.get("to") or {}).get("data") or []) if str(t.get("id")) != my_id]
+            mine = str(frm.get("id")) in my_ids
+            tos = [t for t in ((m.get("to") or {}).get("data") or []) if str(t.get("id")) not in my_ids]
             other = tos[0] if (mine and tos) else ({} if mine else frm)
             text = (m.get("message") or "").strip()
             links = _ig_links(m)
@@ -3992,14 +3995,16 @@ def ig_send(igsid, text, username=""):
     token, my_id, _, _ = ig_cfg()
     if not igsid:
         raise RuntimeError("that conversation has no Instagram id to answer to")
-    r = ig_request(f"/{my_id}/messages", data={"recipient": {"id": str(igsid)}, "message": {"text": text}})
+    r = ig_request("/me/messages", data={"recipient": {"id": str(igsid)}, "message": {"text": text}})
     return msg_add("me", html.escape(text).replace("\n", "<br>"), ext_id="ig:" + str(r.get("message_id") or r.get("id") or uuid.uuid4().hex),
                    links=[u for u in re.findall(r"https?://\S+", text) if canon_key(u)],
                    meta={"html": True, "to": [{"name": username, "email": ""}], "ig": {"igsid": str(igsid), "username": username}})
 
 def ig_status():
     token, uid, username, expires = ig_cfg()
+    z = CONFIG.get("instagram") or {}
     return {"on": bool(token and uid), "username": username, "expires": expires, "at": STATE.get("ig_at"), "error": STATE.get("ig_error"),
+            "account_type": z.get("account_type", ""), "empty": bool(STATE.get("ig_empty")) if STATE.get("ig_at") else None,
             "cookies": ig_cookies_ready(), "browser": browser_cookie_name()}
 
 # ---------------------------------------------------------------- messages (a box for notes from Claude and from friends)

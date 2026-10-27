@@ -1343,6 +1343,12 @@ function fillInstagram(ig) {
   ig = ig || {};
   const st = $('#ig_status'); if (!st) return;
   st.textContent = ig.on ? `connected as @${ig.username}${ig.expires ? ' · token until ' + new Date(ig.expires * 1000).toLocaleDateString() : ''}` : 'not connected';
+  const hint = $('#ig_hint'); if (hint) {
+    hint.hidden = !(ig.on && !ig.error);
+    hint.textContent = !ig.on || ig.error ? '' : ig.account_type && ig.account_type === 'PERSONAL' ? 'Meta hands messages only to professional accounts: switch yours to Creator in the Instagram app, then generate the token again.'
+      : ig.empty ? 'Meta answers, but lists no conversation. With the app in Standard Access it only hands over conversations with accounts that have a role on your Meta app (its testers); all your other chats need Advanced Access for instagram_business_manage_messages, which takes Meta’s app review and business verification. Also check that "allow access to messages" is on under Instagram → Messages → Connected tools.'
+      : 'your conversations arrive in the messages tab on every refresh';
+  }
   $('#ig_disconnect').hidden = !ig.on; $('#ig_connect').textContent = ig.on ? 'replace token' : 'connect';
   const ck = $('#ig_ck_state'); if (ck) { ck.textContent = ig.cookies ? `a session is imported; reels use it` : ig.browser ? `no session imported yet (would read ${ig.browser})` : 'no session imported yet'; $('#ig_cookies').textContent = ig.cookies ? 'import again' : "import my browser's Instagram session"; }
 }

@@ -115,12 +115,13 @@
     <p class="meta">sign in to instagram.com in your browser once, close the browser completely (it keeps its cookies locked while open), press the button, open it back. feedel keeps only the instagram.com cookies, in its own cache folder.</p>
     <h2 class="sub">Direct messages <span class="meta">— through Meta's official API, into the <b>messages</b> tab</span></h2>
     <div class="row"><span class="meta" id="ig_status">not connected</span></div>
+    <p class="meta" id="ig_hint" hidden></p>
     <div class="row"><input id="ig_token" type="password" placeholder="paste the access token from Meta's app dashboard" autocomplete="off"><button id="ig_connect" class="solid">connect</button><button id="ig_disconnect" class="link" hidden>disconnect</button></div>
     <details class="steps-box"><summary class="meta">how to get the token (one-time, about twenty minutes)</summary>
       <ol class="steps">
         <li><b>Make the account professional</b>: in the Instagram app, Settings → Account type and tools → Switch to professional account → <i>Creator</i>. Free and reversible; it only adds a category under your name.</li>
         <li><b>Allow tools to read your messages</b>: Settings → Messages and story replies → Message controls → Connected tools → <i>Allow access to messages</i>.</li>
-        <li><b>Create a Meta app</b> at <a href="https://developers.facebook.com/apps/" target="_blank" rel="noopener">developers.facebook.com/apps ↗</a>: Create app → use case “Manage messaging and content on Instagram” (or “Other” → type <i>Business</i>). Leave it in <i>development mode</i>: no review is needed for your own account.</li>
+        <li><b>Create a Meta app</b> at <a href="https://developers.facebook.com/apps/" target="_blank" rel="noopener">developers.facebook.com/apps ↗</a>: Create app → use case “Manage messaging and content on Instagram” (or “Other” → type <i>Business</i>). In development mode with <i>Standard Access</i> Meta hands over only the conversations with accounts that have a role on the app (its testers); to read all your chats the permission <i>instagram_business_manage_messages</i> needs <i>Advanced Access</i>, which goes through Meta's app review and business verification.</li>
         <li><b>Add the Instagram product</b> → “API setup with Instagram login”. Under <i>Generate access tokens</i>, add your Instagram account (you log in there) and accept the tester invite in Instagram: Settings → Website permissions → Tester invites (or <a href="https://www.instagram.com/accounts/manage_access/" target="_blank" rel="noopener">instagram.com/accounts/manage_access ↗</a>).</li>
         <li><b>Generate the token</b> with the permissions <code>instagram_business_basic</code> and <code>instagram_business_manage_messages</code>, copy it, paste it above and press connect. It lasts 60 days; feedel refreshes it by itself while it is used.</li>
       </ol>
