@@ -5573,7 +5573,7 @@ if __name__ == "__main__":
         if "--no-open" not in sys.argv and not show_running_window(port):  # a running window comes back; else a browser tab
             import webbrowser
             webbrowser.open(f"http://localhost:{port}")
-        sys.exit(0)
+        os._exit(0)  # not sys.exit: a thread already started would keep this copy alive, holding the executable file
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=clipboard_loop, daemon=True).start()
     threading.Thread(target=update_loop, daemon=True).start()
