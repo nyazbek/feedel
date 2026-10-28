@@ -1207,9 +1207,11 @@ function msgTabOf(m) {
   if (m.channel === 'zulip' || (m.channel === 'me' && (m.meta && m.meta.to || []).length)) return 'zulip';
   return 'claude';
 }
-// the conversation a direct message belongs to, and whom it is with
+// the conversation a direct message belongs to, and whom it is with. A reply sent from here before feedel noted the
+// conversation's id is filed by the person's id, with the messages that carry both.
+let igConvOf = {};
 function convKey(m) {
-  if (msgTabOf(m) === 'ig') { const ig = (m.meta && m.meta.ig) || {}; return 'ig:' + (ig.conversation || ig.username || m.sender || '?'); }
+  if (msgTabOf(m) === 'ig') { const ig = (m.meta && m.meta.ig) || {}; return 'ig:' + (ig.conversation || igConvOf[ig.igsid] || ig.igsid || ig.username || m.sender || '?'); }
   if (m.channel === 'zulip') return 'z:' + (m.sender_email || m.sender || '?');
   return 'z:' + ((m.meta && m.meta.to || []).map(p => p.email || p.name).filter(Boolean).sort().join(',') || '?');
 }
@@ -1242,6 +1244,8 @@ function convCard(c) {
 }
 function conversations(msgs, tab) {
   const by = {};
+  igConvOf = {};
+  for (const m of msgs) { const ig = (m.meta && m.meta.ig) || {}; if (ig.conversation && ig.igsid) igConvOf[ig.igsid] = igConvOf[ig.igsid] || ig.conversation; }
   for (const m of msgs) { const k = convKey(m); (by[k] = by[k] || { key: k, tab, msgs: [], who: '' }).msgs.push(m); }
   const out = Object.values(by);
   for (const c of out) { c.msgs.sort((a, b) => a.ts - b.ts || a.id - b.id); const them = c.msgs.find(m => m.channel !== 'me'); c.who = convWho(them || c.msgs[0]); }

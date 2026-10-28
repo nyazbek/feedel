@@ -4063,9 +4063,13 @@ def ig_send(igsid, text, username=""):
     if not igsid:
         raise RuntimeError("that conversation has no Instagram id to answer to")
     r = ig_request("/me/messages", data={"recipient": {"id": str(igsid)}, "message": {"text": text}})
+    with LOCK:  # the conversation this belongs to, as Meta names it, so the page files the reply with the exchange
+        row = DB.execute("SELECT meta FROM messages WHERE user_id = ? AND json_extract(meta, '$.ig.igsid') = ? "
+                         "AND json_extract(meta, '$.ig.conversation') IS NOT NULL ORDER BY ts DESC LIMIT 1", (USER_ID, str(igsid))).fetchone()
+    cid = (json.loads(row["meta"]).get("ig") or {}).get("conversation") if row else None
     return msg_add("me", html.escape(text).replace("\n", "<br>"), ext_id="ig:" + str(r.get("message_id") or r.get("id") or uuid.uuid4().hex),
                    links=[u for u in re.findall(r"https?://\S+", text) if canon_key(u)],
-                   meta={"html": True, "to": [{"name": username, "email": ""}], "ig": {"igsid": str(igsid), "username": username}})
+                   meta={"html": True, "to": [{"name": username, "email": ""}], "ig": {"igsid": str(igsid), "username": username, "conversation": cid}})
 
 def ig_status():
     token, uid, username, expires = ig_cfg()
