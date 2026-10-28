@@ -4638,8 +4638,8 @@ def swap_pending_exe():
     try:
         if os.path.exists(old):
             os.remove(old)
-    except OSError:
-        pass
+    except OSError:  # a copy of the last version is still running (it did not exit after its update): another name
+        old = exe + f".old{int(time.time())}"
     os.replace(exe, old)
     try:
         os.replace(new, exe)
@@ -4650,12 +4650,14 @@ def swap_pending_exe():
     return True
 
 def cleanup_old_exe():
-    old = sys.executable + ".old"
-    if FROZEN and os.path.exists(old):
-        try:
-            os.remove(old)
-        except OSError:
-            pass  # still exiting; next start
+    if not FROZEN:
+        return
+    for name in os.listdir(os.path.dirname(sys.executable) or "."):
+        if name.startswith(os.path.basename(sys.executable) + ".old"):
+            try:
+                os.remove(os.path.join(os.path.dirname(sys.executable), name))
+            except OSError:
+                pass  # still exiting; next start
 
 def update_apply():
     """Use the new version now: swap the executable, or pull the checkout, then restart."""
