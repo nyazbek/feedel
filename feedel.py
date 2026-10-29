@@ -3872,11 +3872,16 @@ def ig_request(path, params=None, data=None, token=None):
         r = ig_http(url, data=body, headers=headers)
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", "ignore")
+        log(f"  instagram: {e.code} on {path[:40]}: {msg[:400]}")  # Meta's whole answer (code, subcode, trace), for when the message alone says nothing
         try:
             err = json.loads(msg).get("error") or {}
             msg = err.get("error_user_msg") or err.get("message") or msg
             if err.get("code") == 190:
                 msg = "the token is no longer valid (expired or revoked): generate a new one in Meta's app dashboard. " + msg
+            elif err.get("code") == 200 and "blocked" in (err.get("message") or "").lower():
+                msg = ("Meta has blocked the app itself, not the token (this follows switching the app to Live without App Review, or an "
+                       "alert left unanswered): in the app dashboard look for an alert or restriction, set App Mode back to Development, "
+                       "then generate a new token under Instagram → API setup and paste it under settings → Instagram. " + msg)
         except Exception:
             pass
         raise RuntimeError(f"Instagram said {e.code}: {msg[:300]}")
