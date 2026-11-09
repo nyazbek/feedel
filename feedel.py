@@ -915,6 +915,53 @@ def yt_scan_channel(cid):
         log("  shorts tab", cid, ex)
     return durs, shorts
 
+AGO_UNITS = {"sec": 1, "second": 1, "min": 60, "minute": 60, "hr": 3600, "hour": 3600, "day": 86400, "week": 604800,
+             "mo": 2592000, "month": 2592000, "yr": 31536000, "year": 31536000, "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "y": 31536000}
+
+def ago_ts(text, now=None):
+    """'3 days ago', '11mo ago', '2 hours ago' → a timestamp, as rounded as YouTube's wording; None when it is not one."""
+    m = re.search(r"(\d+)\s*(second|sec|minute|min|hour|hr|day|week|month|mo|year|yr|s|m|h|d|w|y)\w*\s+ago", text or "")
+    if not m:
+        return None
+    return (now or time.time()) - int(m.group(1)) * AGO_UNITS[m.group(2)]
+
+def yt_videos_page_items(cid, name):
+    """The channel's latest uploads read off its videos page, for when the Atom feed will not answer: ids, titles,
+    lengths, and times as YouTube rounds them ('3 days ago'). A video the feed already gave keeps its exact time.
+    None when the page cannot be read either."""
+    try:
+        d = yt_initial_data(fetch(f"https://www.youtube.com/channel/{cid}/videos", 20,
+                                  headers={**YT_HEADERS, "Accept-Language": "en-US,en;q=0.9"}).decode("utf-8", "ignore"))
+    except Exception as ex:
+        log("  videos page", cid, ex)
+        return None
+    with LOCK:
+        known = {it["id"]: it for it in STATE["items"] if it["kind"] == "yt" and it.get("cid") == cid}
+    now, raw, seen = time.time(), [], set()
+    for lv in walk(d, "lockupViewModel"):
+        vid = lv.get("contentId")
+        if not vid or len(vid) != 11 or vid in seen:
+            continue
+        seen.add(vid)
+        md = lv.get("metadata", {}).get("lockupMetadataViewModel", {})
+        parts = [p.get("text", {}).get("content", "") for row in md.get("metadata", {}).get("contentMetadataViewModel", {}).get("metadataRows", [])
+                 for p in row.get("metadataParts", [])]
+        ts = next((t for t in (ago_ts(p, now) for p in parts) if t), None)
+        for b in walk(lv, "thumbnailBadgeViewModel"):
+            secs = parse_duration(b.get("text", ""))
+            if secs is not None:
+                cache_put("shorts", vid, False)
+                cache_put("durations", vid, secs)
+                break
+        if vid in known:
+            raw.append(known[vid])
+        elif ts:
+            raw.append({"kind": "yt", "id": vid, "cid": cid, "title": (md.get("title") or {}).get("content") or "", "author": name, "ts": ts, "desc": ""})
+    if not raw and not seen:
+        return [] if d else None  # a channel page with nothing on it is an empty channel; no page at all is a failure
+    log(f"  YouTube {name}: the feed did not answer; {len(raw)} videos read off the channel page")
+    return raw
+
 def fetch_channel(sub):
     """One subscription → list of feed items. Resolves string refs, fills in avatar/handle, scans tabs."""
     ns = {"a": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015",
@@ -931,15 +978,31 @@ def fetch_channel(sub):
             sub.pop("error", None)
             save_config()
     cid = sub["id"]
-    root = ET.fromstring(fetch(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"))
-    if not sub.get("name") or sub["name"] == cid:
-        sub["name"] = root.findtext("a:author/a:name", default=cid, namespaces=ns)
-    raw = []
-    for e in root.findall("a:entry", ns):
-        vid = e.findtext("yt:videoId", namespaces=ns)
-        raw.append({"kind": "yt", "id": vid, "cid": cid, "title": e.findtext("a:title", default="", namespaces=ns),
-                    "author": sub["name"], "ts": iso_ts(e.findtext("a:published", namespaces=ns)) or time.time(),
-                    "desc": (e.findtext("m:group/m:description", default="", namespaces=ns) or "")[:300]})
+    root, last = None, None
+    for attempt in range(3):  # YouTube's feed endpoint has lately answered the same channel with 404, 200 or 500 at random
+        try:
+            root = ET.fromstring(fetch(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"))
+            break
+        except urllib.error.HTTPError as ex:
+            last = ex
+            if ex.code not in (404, 429, 500, 502, 503):
+                raise
+        except (urllib.error.URLError, ET.ParseError, TimeoutError, OSError) as ex:
+            last = ex
+        time.sleep(1 + attempt)
+    if root is not None:
+        if not sub.get("name") or sub["name"] == cid:
+            sub["name"] = root.findtext("a:author/a:name", default=cid, namespaces=ns)
+        raw = []
+        for e in root.findall("a:entry", ns):
+            vid = e.findtext("yt:videoId", namespaces=ns)
+            raw.append({"kind": "yt", "id": vid, "cid": cid, "title": e.findtext("a:title", default="", namespaces=ns),
+                        "author": sub["name"], "ts": iso_ts(e.findtext("a:published", namespaces=ns)) or time.time(),
+                        "desc": (e.findtext("m:group/m:description", default="", namespaces=ns) or "")[:300]})
+    else:  # the feed is down for this channel: its videos page stands in
+        raw = yt_videos_page_items(cid, sub.get("name") or cid)
+        if raw is None:
+            raise last
     # a Short needs no length; a video listed without one (live stream, premiere) is remembered as None so the channel
     # is not rescanned every refresh for it; the length is filled in when the channel is next scanned for a new upload
     need = [r["id"] for r in raw if r["id"] not in CACHE["shorts"] or (not CACHE["shorts"][r["id"]] and r["id"] not in CACHE["durations"])]
