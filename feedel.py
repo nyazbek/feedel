@@ -68,9 +68,8 @@ DEFAULT_CONFIG = {
         "users": [],
         "nitter_instances": [
             "https://nitter.jaydenha.uk",
-            "https://nitter.meowing.monster",
+            "https://nitter.mizuki.st",
             "https://nitter.netbub.com",
-            "https://xcancel.com",
         ],
     },
     "rss": {"feeds": []},                      # Substack and any other RSS/Atom feed
@@ -589,6 +588,10 @@ for k, v in DEFAULT_CONFIG.items():  # fill in keys added by newer versions
     elif isinstance(v, dict):
         for kk, vv in v.items():
             CONFIG[k].setdefault(kk, json.loads(json.dumps(vv)))
+NITTER_GONE = {"https://xcancel.com": None, "https://nitter.meowing.monster": "https://nitter.mizuki.st"}  # suspended (451); moved
+_insts = [NITTER_GONE.get(i.rstrip("/"), i) for i in CONFIG["twitter"].get("nitter_instances", [])]
+_insts = [i for i in _insts if i] + [i for i in DEFAULT_CONFIG["twitter"]["nitter_instances"] if i not in _insts]
+CONFIG["twitter"]["nitter_instances"] = list(dict.fromkeys(_insts))  # dead ones out, moved ones followed, the current defaults in
 for _kind, (_sec, _key) in SUB_LISTS.items():
     if not NEW_DB:  # a new database keeps DEFAULT_CONFIG's starter channels until normalize_subscriptions() writes them
         CONFIG[_sec][_key] = load_subs(_kind)
@@ -1150,7 +1153,15 @@ def yt_older_all(limit=24):
 
 # ---------------------------------------------------------------- twitter
 
-TW_GOOD = {"inst": None}  # the Nitter instance that answered last; tried first, since the dead ones cost seconds per account
+TW_DOWN = {}  # instance → until when it is left alone: a dead answer costs every account seconds otherwise; a 429, a short rest
+TW_LANES = {}  # instance → semaphore: public instances rate-limit by address, so at most three requests at a time to each
+TW_LANES_LOCK = threading.Lock()
+
+def tw_lane(inst):
+    with TW_LANES_LOCK:
+        if inst not in TW_LANES:
+            TW_LANES[inst] = threading.Semaphore(3)
+        return TW_LANES[inst]
 
 def tw_links_from_html(fragment):
     """The links in a Nitter-rendered fragment (an RSS description, a post's content): [{url, text}], with Nitter's
@@ -1174,15 +1185,22 @@ def tw_links_from_html(fragment):
 def tw_fetch_user(sub):
     user = sub["id"]
     instances = list(CONFIG["twitter"].get("nitter_instances", []))
-    if TW_GOOD["inst"] in instances:
-        instances.remove(TW_GOOD["inst"])
-        instances.insert(0, TW_GOOD["inst"])
     last = "no instances configured"
-    for inst in instances:
+    if instances:  # accounts spread over the instances instead of all queueing at the one that answered last
+        k = sum(map(ord, user)) % len(instances)
+        instances = instances[k:] + instances[:k]
+    def tries():  # every instance once; a second pass after a pause when they were only busy
+        order = [i for i in instances if TW_DOWN.get(i, 0) < time.time()] or instances
+        yield from order
+        if "429" in last:
+            time.sleep(3)
+            yield from order
+    for inst in tries():
         try:
-            xml = fetch(f"{inst.rstrip('/')}/{user}/rss", timeout=12, headers=FEED_ACCEPT)
+            with tw_lane(inst):
+                xml = fetch(f"{inst.rstrip('/')}/{user}/rss", timeout=12, headers=FEED_ACCEPT)
             root = ET.fromstring(xml)
-            TW_GOOD["inst"] = inst
+            TW_DOWN.pop(inst, None)
             items = []
             for it in root.iter("item"):
                 pubdate = it.findtext("pubDate") or ""
@@ -1208,6 +1226,10 @@ def tw_fetch_user(sub):
             return items
         except Exception as ex:
             last = f"{inst}: {ex}"
+            if isinstance(ex, urllib.error.HTTPError) and ex.code == 429:
+                TW_DOWN[inst] = time.time() + 10  # rate-limited: the next accounts go elsewhere for a few seconds
+            elif isinstance(ex, urllib.error.HTTPError) and ex.code in (410, 451, 500, 502, 503, 521, 522) or isinstance(ex, (urllib.error.URLError, TimeoutError)):
+                TW_DOWN[inst] = time.time() + 120  # gone or unreachable: the other accounts of this round skip it
     raise RuntimeError(f"no Nitter instance answered (last: {last})")
 
 def tw_token(tid):
