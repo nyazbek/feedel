@@ -1164,6 +1164,44 @@ def yt_older_all(limit=24):
 
 # ---------------------------------------------------------------- twitter
 
+NITTER_STATUS = "https://status.d420.de/api/v1/instances"  # the public list of Nitter instances and their health
+TW_PROBE = {"at": 0}
+
+def tw_instances_refresh(reason=""):
+    """The Nitter instances that answer this computer with a feed right now: the configured ones and the healthy ones
+    the public status list names, each asked once for one followed account. The list is rewritten when at least one
+    answers, in the order configured first and then by the list's score; when none does, it is left as it is."""
+    with LOCK:
+        current = [i.rstrip("/") for i in CONFIG["twitter"].get("nitter_instances", [])]
+        users = [s["id"] for s in CONFIG["twitter"].get("users", []) if s.get("id")]
+    user = users[len(users) // 2] if users else "nasa"
+    cands = list(dict.fromkeys(current + [i.rstrip("/") for i in DEFAULT_CONFIG["twitter"]["nitter_instances"]]))  # a dropped default is a candidate again
+    try:
+        d = json.loads(fetch(NITTER_STATUS, timeout=20))
+        hosts = sorted((h for h in (d.get("hosts") or []) if h.get("healthy") and h.get("rss") and str(h.get("url", "")).startswith("https://")),
+                       key=lambda h: -(h.get("points") or 0))
+        cands += [h["url"].rstrip("/") for h in hosts if h["url"].rstrip("/") not in cands]
+    except Exception as ex:
+        log("  nitter: the status list could not be read:", ex)
+    def probe(inst):
+        try:
+            return inst if b"<item>" in fetch(f"{inst}/{user}/rss", timeout=12, headers=FEED_ACCEPT) else None
+        except Exception:
+            return None
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        working = [i for i in ex.map(probe, cands) if i]
+    TW_PROBE["at"] = time.time()
+    if not working:
+        log(f"  nitter: none of {len(cands)} instances answers this computer with a feed right now{reason}")
+        return current
+    if working != current:
+        with LOCK:
+            CONFIG["twitter"]["nitter_instances"] = working
+            save_config()
+        log(f"  nitter: instances now {', '.join(working)}{reason}")
+    TW_DOWN.clear()
+    return working
+
 TW_DOWN = {}  # instance → until when it is left alone: a dead answer costs every account seconds otherwise; a 429, a short rest
 TW_LANES = {}  # instance → semaphore: public instances rate-limit by address, so at most three requests at a time to each
 TW_LANES_LOCK = threading.Lock()
@@ -1907,6 +1945,7 @@ def inspire_related(aid, rel):
 WORKERS = 16        # sources fetched at once; all of it is waiting on the network
 FLUSH_EVERY = 1.5   # seconds between merges of finished sources into the feed, so it fills as sources answer
 QUIET = ((30 * 86400, 6 * 3600), (7 * 86400, 2 * 3600))  # (newest video older than, refetch at most every) for YouTube channels
+QUIET_TW = ((7 * 86400, 6 * 3600), (2 * 86400, 2 * 3600), (12 * 3600, 3600))  # the same for X accounts: public Nitter instances ban an address that asks too much
 KIND_NAMES = {"yt": "YouTube", "tw": "X", "rss": "feeds", "arxiv": "arXiv"}
 
 def newest_by_source():
@@ -1916,13 +1955,19 @@ def newest_by_source():
     return {(r["kind"], r["ref"]): r["ts"] for r in rows}
 
 def due(kind, sub, now):
-    """Adaptive polling, YouTube only: a channel whose newest video is older than 30 days is refetched at most every
-    6 hours, older than 7 days every 2 hours, otherwise every refresh. A channel never fetched, in error, or with no
-    known items is always due. X, feeds and arXiv are fetched every refresh."""
-    if kind != "yt" or not sub.get("last_fetched") or sub.get("error") or not sub.get("newest"):
+    """Adaptive polling for YouTube and X: a channel whose newest video is older than 30 days is refetched at most
+    every 6 hours, older than 7 days every 2 hours, otherwise every refresh; an X account whose newest post is older
+    than 7 days every 6 hours, 2 days every 2 hours, 12 hours every hour. A source never fetched or with no known
+    items is always due; one in error is tried again hourly, since a ban lifts sooner when left alone. Feeds and
+    arXiv are fetched every refresh."""
+    if kind not in ("yt", "tw") or not sub.get("last_fetched"):
+        return True
+    if sub.get("error"):
+        return now - sub["last_fetched"] >= 3600
+    if not sub.get("newest"):
         return True
     age = now - sub["newest"]
-    for older_than, every in QUIET:
+    for older_than, every in (QUIET if kind == "yt" else QUIET_TW):
         if age > older_than:
             return now - sub["last_fetched"] >= every
     return True
@@ -1968,6 +2013,8 @@ def refresh(force=False, kinds=None):
         log("refreshing…" + (f" ({', '.join(KIND_NAMES[k] for k in kinds)}, on request)" if kinds else " (everything, on request)" if force else ""))
         if not kinds or "yt" in kinds:
             sync_accounts(force)
+        if (not kinds or "tw" in kinds) and time.time() - TW_PROBE["at"] > 6 * 3600 and CONFIG["twitter"].get("users"):
+            tw_instances_refresh()
         threading.Thread(target=zulip_fetch_stream, daemon=True).start()
         threading.Thread(target=zulip_fetch_dms, daemon=True).start()
         threading.Thread(target=ig_fetch_dms, daemon=True).start()
@@ -2018,6 +2065,9 @@ def refresh(force=False, kinds=None):
                 if time.time() - flushed_at >= FLUSH_EVERY:
                     flush()
         flush()
+        tw_jobs = sum(1 for k, _ in jobs if k == "tw")
+        if tw_jobs and sum(1 for e in errors if e.startswith("X ")) == tw_jobs and time.time() - TW_PROBE["at"] > 3600:
+            threading.Thread(target=tw_instances_refresh, args=(" (every X account failed this round)",), daemon=True).start()
         save_config()  # resolved ids, names, errors, last_fetched, newest
         save_cache()
         with tx() as db:  # everything fetched is already in the items table; the feed itself is read back from there
