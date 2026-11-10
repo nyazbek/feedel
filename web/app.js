@@ -1403,8 +1403,9 @@ async function fillClaude() {
   const b = c.briefing || {};
   $('#br_on').checked = !!b.on; $('#br_time').value = b.time || '08:00'; $('#br_days').value = b.days || 'daily';
   $('#br_name').value = b.name || ''; $('#br_language').value = b.language || ''; $('#br_profile').value = b.profile || ''; $('#br_extra').value = b.extra || '';
-  const r = c.last_run;
-  $('#br_last').innerHTML = r ? `last run ${ago(r.at)} ago (${esc(r.trigger)}): ${r.ok ? 'ok' : `<span class="warn">${esc((r.output || 'failed').slice(0, 160))}</span>`}` : (b.on ? 'not run yet' : '');
+  const r = c.last_run, sk = c.skipped;
+  $('#br_last').innerHTML = (r ? `last run ${ago(r.at)} ago (${esc(r.trigger)}): ${r.ok ? 'ok' : `<span class="warn">${esc((r.output || 'failed').slice(0, 160))}</span>`}` : (b.on ? 'not run yet' : '')) +
+    (sk && (!r || sk.at > r.at) ? ` · <span class="warn">${ago(sk.at)} ago: ${esc(sk.why)}</span>` : '');
   $('#br_task').textContent = c.task_file ? 'update the Claude Code scheduled task' : 'also install it as a Claude Code scheduled task';
 }
 async function claudeClick(b) {

@@ -4997,8 +4997,12 @@ def briefing_run(trigger="by hand"):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=1500, cwd=HERE, encoding="utf-8", errors="replace", env=claude_env())
             out = (r.stdout or "").strip()
             err = (r.stderr or "").strip()
-            rec["ok"] = r.returncode == 0 and "Failed to authenticate" not in out + err
+            with LOCK:
+                wrote = DB.execute("SELECT 1 FROM messages WHERE user_id = ? AND channel = 'claude' AND ts >= ? LIMIT 1", (USER_ID, rec["at"] - 5)).fetchone()
+            rec["ok"] = r.returncode == 0 and "Failed to authenticate" not in out + err and bool(wrote)
             rec["output"] = (out or err)[-1500:]
+            if r.returncode == 0 and not wrote and not rec["output"]:
+                rec["output"] = "Claude ran but left no note"
             if "Failed to authenticate" in out + err or "not logged in" in (out + err).lower():
                 rec["output"] = "Claude Code is not logged in: run `claude login` in a terminal once. " + rec["output"]
         except subprocess.TimeoutExpired:
@@ -5019,6 +5023,14 @@ def briefing_due(now=None):
     retried an hour later, three times at most. The first two minutes after start are left to the feed's refresh."""
     b = briefing_cfg()
     if not b.get("on"):
+        return False
+    if not mcp_installed()[0]:  # Claude could not reach feedel's tools: launching it would only cost a run that writes nothing
+        today = time.strftime("%Y-%m-%d")
+        if (b.get("skipped") or {}).get("day") != today:
+            with LOCK:
+                b["skipped"] = {"day": today, "at": int(time.time()), "why": "feedel is not connected to Claude Code (settings → Claude → connect), so the briefing was not launched"}
+                save_config()
+            log("briefing (schedule): not launched: feedel is not connected to Claude Code")
         return False
     now = now or time.localtime()
     hh, mm = (b.get("time") or "08:00").split(":")[:2]
@@ -5063,7 +5075,7 @@ def claude_status():
     b = briefing_cfg()
     return {"cli": claude_cli(), "mcp_installed": installed, "mcp_url": mcp_url(), "mcp_other_url": url if url and not installed else None,
             "briefing": {k: b.get(k) for k in ("on", "time", "days", "language", "name", "profile", "extra", "model")},
-            "last_run": b.get("last_run"), "task_file": os.path.exists(briefing_task_path())}
+            "last_run": b.get("last_run"), "skipped": b.get("skipped"), "task_file": os.path.exists(briefing_task_path())}
 
 def briefing_update(patch):
     with LOCK:
