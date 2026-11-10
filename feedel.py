@@ -410,7 +410,7 @@ def write_marks(db, field, ids):
     db.execute("DELETE FROM marks WHERE user_id = ? AND seen_at IS NULL AND saved_at IS NULL", (USER_ID,))
 
 def load_cache():
-    cache = {"durations": {}, "shorts": {}, "tweets": {}, "links": {}, "threads": {}, "inspire": {}}
+    cache = {"durations": {}, "shorts": {}, "tweets": {}, "links": {}, "threads": {}, "inspire": {}, "gone": {}}
     with LOCK:
         for r in DB.execute("SELECT kind, key, value FROM cache").fetchall():
             cache.setdefault(r["kind"], {})[r["key"]] = json.loads(r["value"])
@@ -1006,9 +1006,20 @@ def fetch_channel(sub):
         raw = yt_videos_page_items(cid, sub.get("name") or cid)
         if raw is None:
             raise last
+    raw = [r for r in raw if r["id"] not in CACHE["gone"]]
     # a Short needs no length; a video listed without one (live stream, premiere) is remembered as None so the channel
     # is not rescanned every refresh for it; the length is filled in when the channel is next scanned for a new upload
     need = [r["id"] for r in raw if r["id"] not in CACHE["shorts"] or (not CACHE["shorts"][r["id"]] and r["id"] not in CACHE["durations"])]
+    for v in need:  # a new upload the channel lists but YouTube will not hand over (private, members only) stays out
+        try:
+            fetch("https://www.youtube.com/oembed?" + urlencode({"url": f"https://www.youtube.com/watch?v={v}", "format": "json"}), timeout=10)
+        except urllib.error.HTTPError as ex:
+            if ex.code in (401, 403):
+                yt_gone(v, yt_unavailable_reason(v) or "private or for members only")
+                raw = [r for r in raw if r["id"] != v]
+        except Exception:
+            pass
+    need = [v for v in need if v not in CACHE["gone"]]
     if need:
         durs, shorts = yt_scan_channel(cid)
         for v, s in durs.items():
@@ -2697,6 +2708,37 @@ def ytdlp_exe():
     """A yt-dlp executable for mpv to call. The frozen feedel.exe can answer as one itself."""
     return find_exe("yt-dlp") or (sys.executable if FROZEN else None)
 
+def yt_unavailable_reason(vid):
+    """Why YouTube will not play a video it still lists for its channel: 'private', 'for members only', 'unavailable',
+    'age-restricted'; None when the watch page says it plays (or cannot be read)."""
+    try:
+        page = yt_page(f"https://www.youtube.com/watch?v={vid}")
+    except Exception:
+        return None
+    i = page.find('"playabilityStatus":{')
+    seg = page[i:i + 1500] if i >= 0 else ""
+    m = re.search(r'"status":"([A-Z_]+)"', seg)
+    status = m.group(1) if m else ""
+    low = seg.lower()
+    if "private" in low:
+        return "private"
+    if "members" in low or "join this channel" in low:
+        return "for members only"
+    if "age" in low and ("confirm" in low or "sign in" in low or "restricted" in low):
+        return "age-restricted"
+    if status in ("ERROR", "UNPLAYABLE") or "unavailable" in low:
+        return "unavailable"
+    return None
+
+def yt_gone(vid, why):
+    """A listed video YouTube no longer hands over: remembered, and out of the feed (what you saved stays saved)."""
+    cache_put("gone", vid, why)
+    with LOCK:
+        STATE["items"] = [it for it in STATE["items"] if not (it["kind"] == "yt" and it["id"] == vid)]
+    with tx() as db:
+        db.execute("DELETE FROM items WHERE kind = 'yt' AND ext_id = ?", (vid,))
+    log(f"  YouTube {vid}: {why}; out of the feed")
+
 def play(video_id):
     return play_url(f"https://www.youtube.com/watch?v={video_id}")
 
@@ -2745,6 +2787,9 @@ def download_url(url, open_after=False):
                 info = y.extract_info(url, download=True)
         except Exception as ex:
             log("download failed:", ex)
+            m = re.search(r"\[youtube\] ([\w-]{11}): (Private video|.*members-only.*|Video unavailable)", str(ex))
+            if m:
+                yt_gone(m.group(1), "private" if "Private" in m.group(2) else "for members only" if "members" in m.group(2) else "unavailable")
             return
         if info and info.get("_type") == "playlist":
             entries = [e for e in (info.get("entries") or []) if e]
@@ -2879,7 +2924,14 @@ def resolve_link(url, via=""):
                 if code:
                     cache_put("shorts", vid, short)
             watch = f"https://www.youtube.com/watch?v={vid}"
-            info = json.loads(fetch("https://www.youtube.com/oembed?" + urlencode({"url": watch, "format": "json"}), timeout=15))
+            try:
+                info = json.loads(fetch("https://www.youtube.com/oembed?" + urlencode({"url": watch, "format": "json"}), timeout=15))
+            except urllib.error.HTTPError as ex:
+                if ex.code not in (401, 403, 404):
+                    raise
+                why = yt_unavailable_reason(vid) or ("unavailable" if ex.code == 404 else "private or for members only")
+                yt_gone(vid, why)
+                raise RuntimeError(f"YouTube says this video is {why}; its channel still lists it, so feedel has taken it out of the feed")
             it = {"kind": "yt", "id": vid, "title": info.get("title", ""), "author": info.get("author_name", ""), "ts": now, "desc": "", "link": watch}
             try:  # duration, channel id and upload date from the watch page's player data
                 page = yt_page(watch)
