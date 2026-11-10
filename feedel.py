@@ -1006,7 +1006,7 @@ def fetch_channel(sub):
         raw = yt_videos_page_items(cid, sub.get("name") or cid)
         if raw is None:
             raise last
-    raw = [r for r in raw if r["id"] not in CACHE["gone"]]
+    raw = [r for r in raw if not yt_is_gone(r["id"])]
     # a Short needs no length; a video listed without one (live stream, premiere) is remembered as None so the channel
     # is not rescanned every refresh for it; the length is filled in when the channel is next scanned for a new upload
     need = [r["id"] for r in raw if r["id"] not in CACHE["shorts"] or (not CACHE["shorts"][r["id"]] and r["id"] not in CACHE["durations"])]
@@ -1019,7 +1019,7 @@ def fetch_channel(sub):
                 raw = [r for r in raw if r["id"] != v]
         except Exception:
             pass
-    need = [v for v in need if v not in CACHE["gone"]]
+    need = [v for v in need if not yt_is_gone(v)]
     if need:
         durs, shorts = yt_scan_channel(cid)
         for v, s in durs.items():
@@ -2731,8 +2731,28 @@ def yt_unavailable_reason(vid):
     return None
 
 def yt_gone(vid, why):
-    """A listed video YouTube no longer hands over: remembered, and out of the feed (what you saved stays saved)."""
-    cache_put("gone", vid, why)
+    """A listed video YouTube no longer hands over: out of the feed, and remembered. What you saved stays saved."""
+    cache_put("gone", vid, {"why": why, "at": int(time.time())})
+
+def yt_is_gone(vid):
+    """Still out: a video marked within the day stays out; an older mark is checked again, since a video made private
+    is often made public again once fixed, and it comes back the day YouTube hands it over."""
+    g = CACHE["gone"].get(vid)
+    if not g:
+        return False
+    if isinstance(g, dict) and time.time() - g.get("at", 0) < 86400:
+        return True
+    try:
+        fetch("https://www.youtube.com/oembed?" + urlencode({"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"}), timeout=10)
+    except urllib.error.HTTPError as ex:
+        if ex.code in (401, 403, 404):
+            cache_put("gone", vid, {"why": g.get("why") if isinstance(g, dict) else str(g), "at": int(time.time())})
+            return True
+    except Exception:
+        return True  # could not ask: leave it as it was
+    cache_put("gone", vid, None)
+    log(f"  YouTube {vid}: back; into the feed again")
+    return False
     with LOCK:
         STATE["items"] = [it for it in STATE["items"] if not (it["kind"] == "yt" and it["id"] == vid)]
     with tx() as db:
