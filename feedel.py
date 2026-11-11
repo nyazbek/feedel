@@ -2025,6 +2025,9 @@ def refresh(force=False, kinds=None):
                 if k == "yt" and s.get("id"):
                     s["newest"] = max(s.get("newest") or 0, newest.get((k, s["id"])) or 0) or None
             subs = [(k, s) for k, s in all_subs() if (not s.get("muted") or k == "yt") and (not kinds or k in kinds)]
+            # X only on request when so set: the half-hourly round leaves it alone, the refresh button (or the X tab's) fetches it
+            if CONFIG["twitter"].get("on_demand") and not force and not kinds:
+                subs = [(k, s) for k, s in subs if k != "tw"]
             jobs = [(k, s) for k, s in subs if force or due(k, s, t0)]
             # X, feeds and arXiv first (a handful of sources, each a chip of its own); within a kind the sources that
             # posted most recently go first, so what is new is on the page early and a stopped round loses the quiet ones
@@ -2217,6 +2220,7 @@ def page_items(limits):
 def settings_payload():
     z = CONFIG.get("zulip") or {}
     return {"hide_shorts": CONFIG["youtube"].get("hide_shorts", True), "min_minutes": CONFIG["youtube"].get("min_minutes", 0),
+            "tw_on_demand": bool(CONFIG["twitter"].get("on_demand")),
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "feedel"),
                       "streams": {k: zulip_stream_for(k) for k in KINDS}, "streams_set": z.get("streams") or {},
@@ -2268,6 +2272,8 @@ def update_settings(patch):
             CONFIG["youtube"]["hide_shorts"] = bool(patch["hide_shorts"])
         if "min_minutes" in patch:
             CONFIG["youtube"]["min_minutes"] = max(0, int(patch["min_minutes"] or 0))
+        if "tw_on_demand" in patch:
+            CONFIG["twitter"]["on_demand"] = bool(patch["tw_on_demand"])
         if "max_per_channel" in patch:
             CONFIG["max_per_channel"] = max(0, int(patch["max_per_channel"] or 0))
         if "block_words" in patch:
