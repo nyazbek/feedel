@@ -2220,7 +2220,7 @@ def page_items(limits):
 def settings_payload():
     z = CONFIG.get("zulip") or {}
     return {"hide_shorts": CONFIG["youtube"].get("hide_shorts", True), "min_minutes": CONFIG["youtube"].get("min_minutes", 0),
-            "tw_on_demand": bool(CONFIG["twitter"].get("on_demand")),
+            "tw_on_demand": bool(CONFIG["twitter"].get("on_demand")), "yt_cookies": yt_cookies_ready(), "cookie_browser": browser_cookie_name(),
             "max_per_channel": CONFIG.get("max_per_channel", 0), "block_words": CONFIG["filters"].get("block_words", []),
             "zulip": {"site": z.get("site", ""), "email": z.get("email", ""), "stream": z.get("stream", "feedel"),
                       "streams": {k: zulip_stream_for(k) for k in KINDS}, "streams_set": z.get("streams") or {},
@@ -2834,8 +2834,8 @@ def play_url(url):
     if not exe:
         return download_url(url, open_after=True)
     cmd[0] = exe
-    if "instagram.com" in url and ig_cookies_ready() and os.path.basename(exe).lower().startswith("mpv"):
-        cmd.insert(1, "--ytdl-raw-options=cookies=" + ig_cookie_file())  # mpv's yt-dlp needs the session for Instagram too
+    if player_cookie_file(url) and os.path.basename(exe).lower().startswith("mpv"):
+        cmd.insert(1, "--ytdl-raw-options=cookies=" + player_cookie_file(url))  # mpv's yt-dlp needs the session too
     ytdl = ytdlp_exe()
     if ytdl and os.path.basename(exe).lower().startswith("mpv") and not shutil.which("yt-dlp"):
         # mpv streams YouTube through yt-dlp; tell it where the executable is when it is not on PATH
@@ -3119,14 +3119,40 @@ def ig_cookies_ready():
     return os.path.isfile(p) and os.path.getsize(p) > 100
 
 def ytdlp_cookie_opts(url):
-    """Instagram limits what it hands over anonymously; with your browser's session imported, reels keep working."""
+    """Instagram limits what it hands over anonymously, and YouTube shuts out an address that asks too much; with your
+    browser's session imported, reels and videos keep working."""
     if "instagram.com" in (url or "") and ig_cookies_ready():
         return {"cookiefile": ig_cookie_file()}
+    if link_kind(url or "") == "yt" and yt_cookies_ready():
+        return {"cookiefile": yt_cookie_file()}
     return {}
 
+def player_cookie_file(url):
+    """The cookie file mpv's yt-dlp should use for this link, if any."""
+    return ytdlp_cookie_opts(url).get("cookiefile")
+
+COOKIE_SITES = {"ig": ("instagram.com", "Instagram", "sessionid"), "yt": ("youtube.com", "YouTube", "LOGIN_INFO")}  # domain, name, the cookie that means signed in
+
+def yt_cookie_file():
+    return os.path.join(HERE, "cache", "youtube_cookies.txt")
+
+def yt_cookies_ready():
+    p = yt_cookie_file()
+    return os.path.isfile(p) and os.path.getsize(p) > 100
+
+def yt_import_cookies(browser=None):
+    """YouTube answers "confirm you're not a bot" to an address that asks too much; with your browser's session
+    imported, playing and downloading keep working, as with Instagram."""
+    return import_cookies("yt", browser)
+
 def ig_import_cookies(browser=None):
-    """Copy the instagram.com cookies of a local browser (through yt-dlp's cookie reader) into feedel's own cookie
-    file, once; a Chromium-based browser must be closed for its cookie database to be readable on Windows."""
+    return import_cookies("ig", browser)
+
+def import_cookies(site, browser=None):
+    """Copy one site's cookies from a local browser (through yt-dlp's cookie reader) into feedel's own cookie file,
+    once; a Chromium-based browser must be closed for its cookie database to be readable on Windows."""
+    domain, site_name, session_cookie = COOKIE_SITES[site]
+    path = ig_cookie_file() if site == "ig" else yt_cookie_file()
     try:
         from yt_dlp.cookies import extract_cookies_from_browser
     except ImportError:
@@ -3142,18 +3168,18 @@ def ig_import_cookies(browser=None):
         if "Could not copy" in msg or "locked" in msg.lower() or "database is locked" in msg.lower():
             raise RuntimeError(f"{name} keeps its cookie database locked while it is open: close {name} completely, press this again, then open it back")
         raise RuntimeError(f"could not read {name}'s cookies: {msg[:200]}")
-    out = MozillaCookieJar(ig_cookie_file())
+    out = MozillaCookieJar(path)
     n = 0
     for c in jar:
-        if "instagram.com" in (c.domain or ""):
+        if domain in (c.domain or ""):
             out.set_cookie(c)
             n += 1
     if not n:
-        raise RuntimeError(f"{name} holds no Instagram session: sign in to instagram.com there once, then import again")
-    os.makedirs(os.path.dirname(ig_cookie_file()), exist_ok=True)
+        raise RuntimeError(f"{name} holds no {site_name} session: sign in to {domain} there once, then import again")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     out.save(ignore_discard=True, ignore_expires=True)
     names = {c.name for c in out}
-    return {"ok": True, "cookies": n, "browser": name, "session": "sessionid" in names}
+    return {"ok": True, "cookies": n, "browser": name, "session": session_cookie in names}
 
 def browser_cookie_name():
     """yt-dlp's name for the browser feedel hands links to (or the system default): vivaldi, chrome, edge, brave, firefox."""
@@ -5659,6 +5685,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(ig_connect(str(body.get("token", ""))))
             if p.path == "/api/ig/cookies":
                 return self._send(ig_import_cookies(str(body.get("browser", ""))))
+            if p.path == "/api/yt/cookies":
+                return self._send(yt_import_cookies(str(body.get("browser", ""))))
             if p.path == "/api/ig/disconnect":
                 return self._send(ig_disconnect())
             if p.path == "/api/share":

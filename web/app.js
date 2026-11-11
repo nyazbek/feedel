@@ -931,6 +931,7 @@ function queueLibUpdate(id, patch) {
 function fillSettings() {
   const s = data.settings;
   for (const k of ['hide_thumbnails', 'calm_titles', 'hide_seen', 'hide_shorts', 'tw_on_demand', 'watch_clipboard', 'clipboard_any', 'window']) $('#s_' + k).checked = !!s[k];
+  const yck = $('#yt_ck_state'); if (yck) { yck.textContent = s.yt_cookies ? 'a session is imported; playing and downloading use it (for when YouTube asks an address to "confirm you\'re not a bot")' : `no session imported yet${s.cookie_browser ? ` (would read ${s.cookie_browser})` : ''}; needed only when YouTube refuses to play with "confirm you're not a bot"`; $('#yt_cookies').textContent = s.yt_cookies ? 'import again' : "import my browser's YouTube session"; }
   $('#s_window_note').textContent = (s.window_libs_missing || []).length ? '— needs pip install pywebview pystray pillow' : (s.in_window ? '' : '— from the next start');
   $('#s_min_minutes').value = s.min_minutes ?? 0;
   $('#s_max_per_channel').value = s.max_per_channel ?? 0;
@@ -1641,6 +1642,7 @@ document.addEventListener('click', async e => {
   if (b.id === 's_save') { saveSettings(); return; }
   if (b.id === 'z_test') { testZulip(); return; }
   if (b.id === 'ig_connect' || b.id === 'ig_disconnect' || b.id === 'ig_cookies') { igClick(b); return; }
+  if (b.id === 'yt_cookies') { b.disabled = true; try { const r = await api('/api/yt/cookies', {}); toast(`${r.cookies} YouTube cookies from ${r.browser}${r.session ? '' : ' (but no sign-in cookie: are you signed in there?)'}`, 6000); await load(); } catch (e) { toast(e.message, 9000); } finally { b.disabled = false; } return; }
   if (b.id === 'cl_mcp' || b.id === 'cl_mcp_off' || (b.id && b.id.startsWith('br_'))) { claudeClick(b); return; }
   if (b.id === 'upd_check' || b.id === 'update-go') { updateClick(b); return; }
   if (b.id === 'quit') { if (confirm('stop feedel? the page will stop updating until you start it again.')) { await api('/api/quit', {}); document.body.innerHTML = '<main><p class="meta">feedel stopped. start it again to continue.</p></main>'; } return; }
