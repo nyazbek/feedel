@@ -125,6 +125,10 @@ def save_json(path, data):
         json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp, path)
 
+# Started without a console (the windowed exe, or pythonw), every console program feedel runs (git, claude, mpv's
+# console wrapper) would get a console window of its own from Windows: a black box flashing on screen. This flag says no.
+NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # CREATE_NO_WINDOW
+
 def fetch(url, timeout=15, headers=None, data=None, method=None):
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"User-Agent": UA, **(headers or {})})
@@ -2833,6 +2837,8 @@ def play_url(url):
                 break
     if not exe:
         return download_url(url, open_after=True)
+    if exe.lower().endswith(".com") and os.path.isfile(exe[:-4] + ".exe"):
+        exe = exe[:-4] + ".exe"  # mpv.com is the console wrapper PATH finds first; the .exe beside it is the player
     cmd[0] = exe
     if player_cookie_file(url) and os.path.basename(exe).lower().startswith("mpv"):
         cmd.insert(1, "--ytdl-raw-options=cookies=" + player_cookie_file(url))  # mpv's yt-dlp needs the session too
@@ -2840,7 +2846,7 @@ def play_url(url):
     if ytdl and os.path.basename(exe).lower().startswith("mpv") and not shutil.which("yt-dlp"):
         # mpv streams YouTube through yt-dlp; tell it where the executable is when it is not on PATH
         cmd.insert(1, "--script-opts=ytdl_hook-ytdl_path=" + ytdl)
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
     return f"playing in {os.path.basename(exe)}"
 
 def download(video_id, open_after=False):
@@ -4775,8 +4781,8 @@ def build_info():
         pass
     if not FROZEN and os.path.isdir(os.path.join(HERE, ".git")) and shutil.which("git"):
         try:
-            sha = subprocess.run(["git", "-C", HERE, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
-            date = subprocess.run(["git", "-C", HERE, "log", "-1", "--format=%cI"], capture_output=True, text=True, timeout=10).stdout.strip()
+            sha = subprocess.run(["git", "-C", HERE, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10, **NO_WINDOW).stdout.strip()
+            date = subprocess.run(["git", "-C", HERE, "log", "-1", "--format=%cI"], capture_output=True, text=True, timeout=10, **NO_WINDOW).stdout.strip()
             if sha:
                 info = {"sha": sha, "short": sha[:7], "date": date, "ref": "source"}
         except Exception:
@@ -4914,7 +4920,7 @@ def update_apply():
             update_download()
             swap_pending_exe()
     elif mode == "git":
-        r = subprocess.run(["git", "-C", HERE, "pull", "--ff-only"], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["git", "-C", HERE, "pull", "--ff-only"], capture_output=True, text=True, timeout=120, **NO_WINDOW)
         if r.returncode != 0:
             raise RuntimeError("git pull failed: " + (r.stderr or r.stdout).strip()[:300])
         log("updated: " + (r.stdout.strip().splitlines() or ["pulled"])[-1])
@@ -4982,7 +4988,7 @@ def mcp_install(on=True):
     if cli:
         cmd = [cli, "mcp", "add", "--transport", "http", "--scope", "user", "feedel", mcp_url()] if on else [cli, "mcp", "remove", "--scope", "user", "feedel"]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=claude_env())
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=claude_env(), **NO_WINDOW)
             if r.returncode == 0 or (not on and "not found" in (r.stderr + r.stdout).lower()):
                 return {"ok": True, "installed": mcp_installed()[0], "how": "claude mcp", "note": (r.stdout or r.stderr).strip()[:200]}
             note = (r.stderr or r.stdout).strip()[:200]
@@ -5076,7 +5082,7 @@ def briefing_run(trigger="by hand"):
         if (b.get("model") or "").strip():
             cmd += ["--model", b["model"].strip()]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1500, cwd=HERE, encoding="utf-8", errors="replace", env=claude_env())
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1500, cwd=HERE, encoding="utf-8", errors="replace", env=claude_env(), **NO_WINDOW)
             out = (r.stdout or "").strip()
             err = (r.stderr or "").strip()
             with LOCK:
