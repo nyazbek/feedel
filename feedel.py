@@ -129,6 +129,13 @@ def save_json(path, data):
 # console wrapper) would get a console window of its own from Windows: a black box flashing on screen. This flag says no.
 NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # CREATE_NO_WINDOW
 
+def child_env():
+    """The environment for a program feedel starts. The one-file exe passes its children PyInstaller's _PYI_*
+    variables, which tell another feedel.exe to run out of this process's temporary folder instead of unpacking its
+    own; that folder is deleted the moment this process exits, and the other one dies on a missing module
+    ("No module named '_sqlite3'"). Without them every feedel.exe unpacks for itself."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
+
 def fetch(url, timeout=15, headers=None, data=None, method=None):
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"User-Agent": UA, **(headers or {})})
@@ -637,7 +644,7 @@ def restart_self():
         # The frozen one-file exe hands its children PyInstaller's _PYI_* variables, which make a child run out of the
         # parent's temporary folder — and the old bootloader deletes that folder once this process is gone, leaving the
         # new one without its files and a "Warning" box behind. Without them the new process unpacks its own folder.
-        env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
+        env = child_env()
         try:
             if WINDOW.get("teardown"):
                 WINDOW["teardown"]()  # the tray icon and window go now; os._exit alone would leave a ghost tray icon
@@ -3407,12 +3414,27 @@ def feedel_opens(url):
         feeds = {re.sub(r"^(www|m)\.", "", urlparse(s.get("id") or s.get("ref") or "").netloc.lower()) for s in sub_list("rss")}
     return bool(host) and host in feeds
 
+def open_in_browser(url):
+    """A page in the person's real browser. On Windows it is handed to that browser's program, never to the system's
+    default handler: when feedel is the default browser, the default handler is feedel.exe again, started with this
+    process's environment and so running out of this process's temporary folder, which is gone a moment later."""
+    b = browser_for_the_rest() if sys.platform == "win32" else None
+    if b:
+        subprocess.Popen([b, url], env=child_env())
+        return os.path.basename(b)
+    import webbrowser
+    held = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("_PYI_") or k == "_MEIPASS2"}
+    try:  # whatever the system starts for this link starts without PyInstaller's variables too
+        webbrowser.open(url)
+    finally:
+        os.environ.update(held)
+    return "default"
+
 def open_link_cli(url):
     """`feedel --open URL`: a video, post, paper, reel or newsletter link goes to the inbox and the page opens on
     it; anything else goes to the normal browser. This is what makes feedel usable as the system's link handler."""
     url = unshorten(url)
     if feedel_opens(url):
-        import webbrowser
         target = f"http://localhost:{PORT}/open?" + urlencode({"u": url})
         import socket
         with socket.socket() as probe:
@@ -3420,17 +3442,12 @@ def open_link_cli(url):
             running = probe.connect_ex(("127.0.0.1", PORT)) == 0
         if running:
             if not show_running_window(PORT, link=url):  # running in its own window: it shows the link itself
-                webbrowser.open(target)
+                open_in_browser(target)
             return 0
         # not running: start the server with this link queued and the page opened on the inbox
         STATE["queued_link"] = url
         return None
-    b = browser_for_the_rest()
-    if b:
-        subprocess.Popen([b, url])
-        return 0
-    import webbrowser
-    webbrowser.open(url)
+    open_in_browser(url)
     return 0
 
 def handler_command():
@@ -5671,13 +5688,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not prompt:
                     return self._send({"error": "nothing to take"}, code=400)
                 url = (CONFIG.get("claude_url") or "https://claude.ai/new?q={q}").replace("{q}", urllib.parse.quote(prompt[:6000], safe=""))
-                b = browser_for_the_rest()
-                if b:
-                    subprocess.Popen([b, url])
-                else:
-                    import webbrowser
-                    webbrowser.open(url)
-                return self._send({"ok": True, "browser": os.path.basename(b) if b else "default"})
+                return self._send({"ok": True, "browser": open_in_browser(url)})
             if p.path == "/api/messages/send":
                 return self._send(msg_send(str(body.get("text", "")), body.get("to") or [], body.get("reply_to"), str(body.get("title", ""))))
             if p.path == "/api/messages/update":
@@ -5810,8 +5821,7 @@ if __name__ == "__main__":
     if FROZEN and os.path.exists(pending_path()):  # a build fetched last time: swap it in and start that one instead
         try:
             if swap_pending_exe():
-                env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
-                subprocess.Popen([sys.executable] + sys.argv[1:], env=env, close_fds=True)
+                subprocess.Popen([sys.executable] + sys.argv[1:], env=child_env(), close_fds=True)
                 os._exit(0)
         except Exception as ex:
             log("could not apply the downloaded update:", ex)
@@ -5835,8 +5845,7 @@ if __name__ == "__main__":
     except OSError:  # already running (double-clicked twice): just show the page
         log(f"port {port} is busy; feedel is probably already running — opening the page")
         if "--no-open" not in sys.argv and not show_running_window(port):  # a running window comes back; else a browser tab
-            import webbrowser
-            webbrowser.open(f"http://localhost:{port}")
+            open_in_browser(f"http://localhost:{port}")
         os._exit(0)  # not sys.exit: a thread already started would keep this copy alive, holding the executable file
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=clipboard_loop, daemon=True).start()
@@ -5850,8 +5859,7 @@ if __name__ == "__main__":
     in_window = window_wanted() and window_available()
     if "--no-open" not in sys.argv and not in_window:
         try:
-            import webbrowser
-            webbrowser.open(f"http://localhost:{port}" + ("/#inbox" if "--inbox" in sys.argv else ""))
+            open_in_browser(f"http://localhost:{port}" + ("/#inbox" if "--inbox" in sys.argv else ""))
         except Exception:
             pass
     try:
@@ -5862,8 +5870,7 @@ if __name__ == "__main__":
                 run_window(port, "#inbox" if "--inbox" in sys.argv else "")
             except Exception as ex:  # e.g. no WebView2 runtime: the server is up, so show the page the usual way
                 log(f"the window could not open ({ex}) — opening the browser instead")
-                import webbrowser
-                webbrowser.open(f"http://localhost:{port}" + ("/#inbox" if "--inbox" in sys.argv else ""))
+                open_in_browser(f"http://localhost:{port}" + ("/#inbox" if "--inbox" in sys.argv else ""))
                 threading.Event().wait()
         else:
             srv.serve_forever()
