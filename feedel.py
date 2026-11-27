@@ -1385,7 +1385,7 @@ def tw_nitter_item(block, tid=None):
                 pass
     return {"id": lm.group(2), "link": f"https://x.com/{lm.group(1)}/status/{lm.group(2)}",
             "user": (um.group(1) if um else lm.group(1)).lower(), "name": html.unescape(nm.group(1)) if nm else "",
-            "text": strip_html(cm.group(1), 2000) if cm else "", "links": tw_links_from_html(cm.group(1)) if cm else [], "ts": ts or time.time(),
+            "text": strip_html(cm.group(1), 30000) if cm else "", "links": tw_links_from_html(cm.group(1)) if cm else [], "ts": ts or time.time(),
             "media": bool(re.search(r'class="attachments"', block))}
 
 def tw_nitter_items(seg):
@@ -1397,9 +1397,11 @@ def tw_nitter_items(seg):
     return out
 
 def tw_nitter_page(user, tid, want_after=False):
-    """A post's conversation page from the first Nitter instance that answers: {before, main, after, replies}.
+    """A post's conversation page from the first Nitter instance that answers: {before, main, after, replies, more}.
     Instances disagree on how much of a thread they list, so when the first one shows no continuation and one
-    is expected (want_after), a second instance gets a chance and the longer answer wins."""
+    is expected (want_after), a second instance gets a chance and the longer answer wins. A page lists about
+    thirty posts of a thread and then links "more replies" to the last one it shows, whose own page carries the
+    next thirty: `more` is that post's id, empty when the thread ends on this page."""
     best = None
     for inst in CONFIG["twitter"].get("nitter_instances", []):
         try:
@@ -1417,10 +1419,13 @@ def tw_nitter_page(user, tid, want_after=False):
             return page[i:min(ends)] if ends else page[i:]
         main_block = seg('class="main-tweet"', ['class="after-tweet', 'class="replies"', 'id="r"'])
         main = tw_nitter_item(main_block, tid)
+        after_seg = seg('class="after-tweet', ['class="replies"', 'id="r"'])
+        more = re.search(r'class="more-replies-text" href="/[A-Za-z0-9_]+/status/(\d+)', after_seg)
         got = {"before": tw_nitter_items(seg('class="before-tweet', ['class="main-tweet"'])),
                "main": [main] if main else [],
-               "after": tw_nitter_items(seg('class="after-tweet', ['class="replies"', 'id="r"'])),
-               "replies": tw_nitter_items(seg('class="replies"', ['<footer', '</body>']))}
+               "after": tw_nitter_items(after_seg),
+               "replies": tw_nitter_items(seg('class="replies"', ['<footer', '</body>'])),
+               "more": more.group(1) if more else ""}
         if best is None or len(got["after"]) > len(best["after"]):
             best = got
         if best["after"] or not want_after:
@@ -1432,13 +1437,13 @@ def tw_thread(url):
     """A post with its whole thread: every post of the author's chain from its first post to its last, wherever
     you clicked in it, plus the posts it replies to (by other people) and other people's replies. From Nitter
     conversation pages when an instance answers; otherwise only the parents, from X's public syndication
-    endpoint. Cached for twenty minutes."""
+    endpoint. Cached for twenty minutes; two when part of the thread could not be read."""
     m = re.search(r"/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d+)", url)
     if not m:
         raise RuntimeError("that is not a link to a post")
     user, tid = m.group(1), m.group(2)
     cached = CACHE["threads"].get(tid)
-    if cached and "posts" in cached and cached.get("at", 0) > time.time() - 1200:
+    if cached and "posts" in cached and cached.get("at", 0) > time.time() - (120 if cached.get("partial") else 1200):
         return cached
 
     def from_syndication(pid, who=""):
@@ -1489,15 +1494,35 @@ def tw_thread(url):
     while k > 0 and before[k - 1]["user"] == me:
         k -= 1
     own_above, others_above = before[k:], before[:k]
-    root = own_above[0] if own_above else main
-    chain = own_above + [main] + [a for a in page["after"] if a["user"] == me]
+    posts = {p["id"]: p for p in own_above + [main] + [a for a in page["after"] if a["user"] == me]}
     pool = list(page["replies"])
-    if root["id"] != main["id"]:  # the continuation is listed in full only on the thread's first post
-        rp = tw_nitter_page(root["user"], root["id"], want_after=True)
-        if rp:
-            chain = [root] + [a for a in rp["after"] if a["user"] == me] + chain
-            pool += rp["replies"]
-    posts = {p["id"]: p for p in chain}
+    # The continuation is listed in full only from the thread's first post, and thirty posts at a time: the first
+    # post's page, then every page a "more replies" link points to, until the thread ends (or twelve pages).
+    read, partial = {main["id"]}, False
+    todo = ([(own_above[0]["id"], True)] if own_above else []) + ([(page["more"], False)] if page.get("more") else [])
+    while todo:
+        pid, want = todo.pop(0)
+        if pid in read:
+            continue
+        if len(read) >= 12:
+            partial = True
+            break
+        read.add(pid)
+        p = tw_nitter_page(me, pid, want_after=want)
+        if not p:
+            partial = True
+            continue
+        above = p["before"]
+        j = len(above)
+        while j > 0 and above[j - 1]["user"] == me:
+            j -= 1
+        for a in above[j:] + [a for a in p["after"] if a["user"] == me]:
+            posts.setdefault(a["id"], a)
+        pool += p["replies"]
+        if j < len(above):  # posts of the author above this one: the thread starts further up
+            todo.append((above[j]["id"], True))
+        if p.get("more"):
+            todo.append((p["more"], False))
     # the author's other posts in the conversation that reply into the thread (Nitter files them under replies)
     cands = [p for p in pool if p["user"] == me and p["id"] not in posts]
     for p in sorted(cands, key=lambda p: int(p["id"])):
@@ -1510,8 +1535,13 @@ def tw_thread(url):
     out = {"before": others_above, "tweet": main, "posts": ordered, "index": index,
            "after": ordered[index + 1:], "replies": [r for r in page["replies"] if r["user"] != me and r["id"] not in posts][:40],
            "source": "nitter", "at": time.time()}
-    for t in out["before"] + out["posts"] + out["replies"]:  # videos in the thread are playable, photos shown
-        media = tw_syndication(t["id"]) if t.get("media") else None
+    if partial:
+        out.update({"partial": True, "note": "this thread is longer than what is shown: the rest could not be read just now. "
+                                             "“open” on its last post reads on from there"})
+    with_media = [t for t in out["before"] + out["posts"] + out["replies"] if t.get("media")]
+    with ThreadPoolExecutor(max_workers=4) as ex:  # videos in the thread are playable, photos shown; a long thread has dozens
+        found = list(ex.map(lambda t: tw_syndication(t["id"]), with_media))
+    for t, media in zip(with_media, found):
         if media and media.get("video"):
             t.update({k: media[k] for k in ("video", "mp4", "thumb", "dur")})
         if media and media.get("photos"):
@@ -2199,11 +2229,23 @@ def visible_items():
                 papers[it["id"]] = {**it, "tags": list(sub.get("tags", [])), "via": [sub.get("name") or sub["id"]]}
                 out.append(papers[it["id"]])
                 continue
-            if cap and per[(it["kind"], it["cid"])] >= cap:
-                continue
-            per[(it["kind"], it["cid"])] += 1
+            # a thread of twenty posts is one item of its account, not twenty: an author's replies to themself pass
+            # the cap here and are counted below, once the threads are grouped (counted here, a thread was cut at the cap)
+            if not (it["kind"] == "tw" and it.get("reply_to") and it.get("reply_to_user") == it["cid"]):
+                if cap and per[(it["kind"], it["cid"])] >= cap:
+                    continue
+                per[(it["kind"], it["cid"])] += 1
             out.append({**it, "tags": sub.get("tags", []), "author": sub.get("name") or it["author"]})
         out = group_threads(out)
+        if cap:
+            per_tw, kept = Counter(), []
+            for it in out:
+                if it["kind"] == "tw":
+                    if per_tw[it["cid"]] >= cap:
+                        continue
+                    per_tw[it["cid"]] += 1
+                kept.append(it)
+            out = kept
         # the cap is per kind: three hundred X accounts must not push the day's videos out of the feed
         cap = int(CONFIG.get("max_items", 400))
         caps = {"yt": cap, "tw": cap, "rss": cap, "ig": cap, "arxiv": max(cap, 2000)}

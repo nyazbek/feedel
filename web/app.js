@@ -155,7 +155,6 @@ function render() {
   else if (view === 'source') { if (src) renderSource(); }
   else renderSubs();
   restoreThreads();
-  for (const [id, st] of twOpen) { const a = document.querySelector(`article[data-id="${CSS.escape(id)}"]`); if (a && !a.querySelector('.twthread')) openTwThread(a, st.cur, false, st.stack); }
   restoreInspire();
   restoreCur();
   fillInspire();
@@ -353,9 +352,47 @@ function captureDrafts() {  // before a re-render wipes the DOM, keep what was t
     const ed = box.querySelector('.msg [data-edit]');
     if (ed) t.edit = { mid: +ed.closest('.msg').dataset.mid, text: ed.value }; else if (t.edit && !t.editOpening) t.edit = null;
   }
+  captureOpen();
 }
 function restoreThreads() {
   for (const [key, t] of threads) { const host = findHost(key); if (host && !threadBox(host)) mountThread(host, t, t.draft || ''); }
+  restoreOpen();
+}
+// What you unfolded inside an item survives a re-render too: the feed re-reads itself every minute and replaces the
+// whole list, which used to fold a long post back, close "the thread goes on" and re-read an open X thread from
+// scratch under your eyes. Texts, the rest of a thread and an abstract are remembered per item; the box of an X
+// thread is kept as it is and put back, with whatever was unfolded in it.
+const opened = new Map();  // article id → {more: [which texts], inthread, abs}
+function ownTexts(a) { return [...a.querySelectorAll('.tweet, .desc, .ctxt')].filter(t => !t.closest('.twthread, .thread')); }
+function captureOpen() {
+  document.querySelectorAll('article[data-id]').forEach(a => {
+    const id = a.dataset.id, box = a.querySelector('.twthread'), tw = twOpen.get(id);
+    if (box && tw) tw.box = box;
+    const more = ownTexts(a).map((t, n) => t.classList.contains('open') ? n : -1).filter(n => n >= 0);
+    const inthread = !!a.querySelector('.inthread.open'), abs = !!a.querySelector('.abs:not([hidden])');
+    if (more.length || inthread || abs) opened.set(id, { more, inthread, abs }); else opened.delete(id);
+  });
+}
+function restoreOpen() {
+  const find = id => document.querySelector(`article[data-id="${CSS.escape(id)}"]`);
+  for (const [id, st] of opened) {
+    const a = find(id); if (!a) continue;
+    const texts = ownTexts(a);
+    for (const n of st.more) {
+      const t = texts[n]; if (!t || t.classList.contains('open')) continue;
+      t.classList.add('open');
+      const b = t.nextElementSibling; if (b && b.matches('button.more')) b.textContent = 'less';
+    }
+    const it = a.querySelector('.inthread');
+    if (st.inthread && it && !it.classList.contains('open')) { it.classList.add('open'); const b = it.querySelector(':scope > button'); if (b) b.textContent = '▾' + b.textContent.slice(1); }
+    const abs = a.querySelector('.abs');
+    if (st.abs && abs && abs.hidden) { abs.hidden = false; const b = a.querySelector('[data-a=abs]'); if (b) b.textContent = 'hide abstract'; }
+  }
+  for (const [id, st] of twOpen) {
+    const a = find(id); if (!a || a.querySelector('.twthread')) continue;
+    const acts = a.querySelector(':scope > div > .acts, :scope > .acts');
+    if (st.box && acts) acts.after(st.box); else openTwThread(a, st.cur, false, st.stack);
+  }
 }
 
 async function sendReply(box) {
@@ -742,7 +779,7 @@ function twPost(t, cls = '', num = '', tag = '') {
   return `<div class="twpost ${cls}"><div class="who">${num ? `<span class="n">${num}</span> ` : ''}<button class="src" data-src="tw|${esc(t.user)}" title="their profile"><b>${esc(t.name || '@' + t.user)}</b></button> <span class="meta">@${esc(t.user)} · <a href="${esc(t.link)}" target="_blank" rel="noopener">${ago(t.ts)} ago</a>${tag ? ' · ' + tag : ''}</span></div>
     <div class="tweet${long ? ' long' : ''}">${linkify(t.text, t.links)}</div><button class="more${long ? ' always' : ''}" data-a="more">more</button>${photos(t.photos)}${vid || go ? `<div class="acts">${vid}${go}</div>` : ''}</div>`;
 }
-const twOpen = new Map();  // article id → {stack, cur}: open X thread boxes survive a re-render of the list
+const twOpen = new Map();  // article id → {stack, cur, box}: open X thread boxes survive a re-render of the list
 async function openTwThread(art, url, push, restore) {
   let box = art.querySelector('.twthread');
   if (box && !url) { box.remove(); twOpen.delete(art.dataset.id); return; }
@@ -752,7 +789,7 @@ async function openTwThread(art, url, push, restore) {
   else if (push && box._cur) box._stack.push(box._cur);
   if (restore) box._stack = restore.slice();
   box._cur = target;
-  twOpen.set(art.dataset.id, { stack: box._stack.slice(), cur: target });
+  twOpen.set(art.dataset.id, { stack: box._stack.slice(), cur: target, box });
   box.innerHTML = '<span class="meta">reading the thread…</span>';
   try {
     const t = await api('/api/tw/thread?url=' + encodeURIComponent(target));
